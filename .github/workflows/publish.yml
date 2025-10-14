@@ -1,0 +1,79 @@
+name: Publish Package
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'package.json'
+  # Only publish when package.json version changes on main branch
+
+jobs:
+  check-version-change:
+    runs-on: ubuntu-latest
+    outputs:
+      version-changed: ${{ steps.check.outputs.changed }}
+      current-version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if version changed
+        id: check
+        run: |
+          current_version=$(node -p "require('./package.json').version")
+          echo "version=${current_version}" >> $GITHUB_OUTPUT
+
+          # Check if package.json version changed in this commit
+          if git diff HEAD~1 HEAD --name-only | grep -q "package.json"; then
+            prev_version=$(git show HEAD~1:package.json | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin')).version")
+            if [ "$current_version" != "$prev_version" ]; then
+              echo "Version changed from $prev_version to $current_version"
+              echo "changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "Package.json changed but version stayed the same"
+              echo "changed=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Package.json not changed in this commit"
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  publish:
+    needs: check-version-change
+    if: needs.check-version-change.outputs.version-changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm test:run
+
+      - name: Build package
+        run: pnpm build
+
+      - name: Publish to npm
+        run: pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to JSR
+        run: pnpx jsr publish

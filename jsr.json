@@ -2,7 +2,7 @@
   "name": "@logan/libsql-search",
   "author": "llbbl",
   "license": "MIT",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Semantic search for static sites using libSQL/Turso with multi-provider embeddings",
   "exports": {
     ".": "./src/index.ts"

@@ -1,6 +1,6 @@
 {
   "name": "@logan/libsql-search",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "exports": "./src/index.ts",
   "compilerOptions": {
     "allowJs": true,

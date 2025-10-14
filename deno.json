@@ -1,5 +1,5 @@
 {
-  "name": "@llbbl/libsql-search",
+  "name": "@logan/libsql-search",
   "version": "0.1.2",
   "exports": "./src/index.ts",
   "compilerOptions": {

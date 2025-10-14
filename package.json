@@ -1,6 +1,6 @@
 {
   "name": "libsql-search",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Semantic search for static sites using libSQL/Turso with multi-provider embeddings",
   "type": "module",
   "main": "./dist/index.js",

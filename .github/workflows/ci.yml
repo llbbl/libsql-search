@@ -64,10 +64,8 @@ jobs:
       - name: Check build artifacts
         run: |
           test -f dist/index.js || exit 1
+          test -f dist/index.esm.js || exit 1
           test -f dist/index.d.ts || exit 1
-          test -f dist/embeddings.js || exit 1
-          test -f dist/indexer.js || exit 1
-          test -f dist/search.js || exit 1
 
   security:
     name: Security Scan

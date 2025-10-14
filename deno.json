@@ -1,0 +1,21 @@
+{
+  "name": "@llbbl/libsql-search",
+  "version": "0.1.0",
+  "exports": "./src/index.ts",
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": [
+      "deno.window",
+      "dom"
+    ],
+    "strict": true
+  },
+  "test": {
+    "include": [
+      "tests/**/*.test.ts"
+    ]
+  },
+  "tasks": {
+    "check": "deno check src/index.ts"
+  }
+}

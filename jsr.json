@@ -1,0 +1,28 @@
+{
+  "name": "@llbbl/libsql-search",
+  "author": "llbbl",
+  "license": "MIT",
+  "version": "0.1.0",
+  "description": "Semantic search for static sites using libSQL/Turso with multi-provider embeddings",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publish": {
+    "include": [
+      "src/**/*.ts",
+      "README.md",
+      "LICENSE"
+    ]
+  },
+  "keywords": [
+    "libsql",
+    "turso",
+    "vector-search",
+    "semantic-search",
+    "embeddings",
+    "static-sites",
+    "markdown",
+    "astro",
+    "nextjs"
+  ]
+}

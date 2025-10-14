@@ -1,0 +1,22 @@
+ignoredBuiltDependencies:
+  - esbuild
+  - protobufjs
+
+onlyBuiltDependencies:
+  - '-'
+  - /
+  - '@'
+  - a
+  - c
+  - d
+  - e
+  - h
+  - i
+  - l
+  - n
+  - o
+  - p
+  - r
+  - sharp
+  - t
+  - u

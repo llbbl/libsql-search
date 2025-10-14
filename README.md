@@ -1,5 +1,11 @@
 # libsql-search
 
+[![npm version](https://img.shields.io/npm/v/libsql-search.svg)](https://www.npmjs.com/package/libsql-search)
+[![JSR](https://jsr.io/badges/@logan/libsql-search)](https://jsr.io/@logan/libsql-search)
+[![npm downloads](https://img.shields.io/npm/dm/libsql-search.svg)](https://www.npmjs.com/package/libsql-search)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/llbbl/libsql-search/actions/workflows/ci.yml/badge.svg)](https://github.com/llbbl/libsql-search/actions/workflows/ci.yml)
+
 Semantic search for static sites using libSQL/Turso with multi-provider embeddings.
 
 Add AI-powered vector search to your Astro, Next.js, or any static site with minimal configuration. Index markdown content, generate embeddings locally or via API, and provide lightning-fast semantic search to your users.
@@ -27,7 +33,7 @@ pnpm add libsql-search @libsql/client
 
 **JSR:**
 ```bash
-deno add @llbbl/libsql-search
+deno add @logan/libsql-search
 ```
 
 ## Quick Start

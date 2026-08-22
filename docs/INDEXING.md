@@ -57,8 +57,10 @@ site build:
 
 ## Table Names
 
-`tableName` is interpolated into SQL. Treat it as a trusted identifier coming
-from your own configuration, not from user input.
+`tableName` must be an ASCII SQLite identifier matching
+`[A-Za-z_][A-Za-z0-9_]*`. Valid names are quoted internally for table and index
+SQL, so reserved words such as `"select"` work safely. Invalid names fail before
+database calls or embedding generation.
 
 ## Runtime Notes
 

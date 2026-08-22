@@ -37,6 +37,11 @@ Defaults:
 - `tableName`: `"articles"`
 - `dimensions`: `768`
 
+`tableName` must be an ASCII SQLite identifier matching
+`[A-Za-z_][A-Za-z0-9_]*`. Valid identifiers are quoted internally, so reserved
+words such as `"select"` are safe to use. `dimensions` must be a positive
+integer.
+
 The created schema includes:
 
 - `id` primary key
@@ -70,6 +75,8 @@ Defaults:
 - `fileExtensions`: [".md", ".markdown"]
 - `exclude`: ["node_modules", ".git", "dist", "build"]
 - `tableName`: `"articles"`
+
+`tableName` follows the same identifier policy as `createTable()`.
 
 Return shape:
 
@@ -107,6 +114,10 @@ Defaults:
 - `limit`: `10`
 - `tableName`: `"articles"`
 
+`limit` must be an integer from `1` through `100`; invalid values are rejected
+before query embedding generation. `tableName` follows the same identifier
+policy as `createTable()`.
+
 Result shape:
 
 ```ts
@@ -141,6 +152,8 @@ Returns articles in a specific folder.
 ### `getFolders(client, tableName?)`
 
 Returns distinct folder names from the index.
+
+All article retrieval helpers validate `tableName` before executing SQL.
 
 ## Embedding Helpers
 

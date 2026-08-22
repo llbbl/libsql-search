@@ -7,6 +7,7 @@ import { join, relative, dirname, extname } from 'path';
 import matter from 'gray-matter';
 import type { Client } from '@libsql/client';
 import { generateEmbedding, prepareTextForEmbedding, type EmbeddingOptions } from './embeddings.js';
+import { normalizeVectorDimensions, quoteSqlIdentifier } from './sql.js';
 
 export interface IndexerOptions {
   client: Client;
@@ -45,6 +46,7 @@ export async function indexContent(options: IndexerOptions): Promise<{
     tableName = 'articles',
     onProgress
   } = options;
+  const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
 
   // Find all content files
   const files = await findFiles(contentPath, contentPath, fileExtensions, exclude);
@@ -55,7 +57,7 @@ export async function indexContent(options: IndexerOptions): Promise<{
   }
 
   // Clear existing content
-  await client.execute(`DELETE FROM ${tableName}`);
+  await client.execute(`DELETE FROM ${quotedTableName}`);
 
   // Process each file
   let success = 0;
@@ -70,7 +72,7 @@ export async function indexContent(options: IndexerOptions): Promise<{
 
     try {
       const document = await processFile(file, embeddingOptions);
-      await insertDocument(client, document, tableName);
+      await insertDocument(client, document, quotedTableName);
       success++;
     } catch (error) {
       console.error(`Failed to index ${file.relativePath}:`, error);
@@ -166,10 +168,10 @@ async function processFile(
 async function insertDocument(
   client: Client,
   document: IndexedDocument,
-  tableName: string
+  quotedTableName: string
 ): Promise<void> {
   await client.execute({
-    sql: `INSERT INTO ${tableName}
+    sql: `INSERT INTO ${quotedTableName}
           (slug, title, content, folder, tags, embedding, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, vector(?), datetime('now'), datetime('now'))`,
     args: [
@@ -191,32 +193,38 @@ export async function createTable(
   tableName: string = 'articles',
   dimensions: number = 768
 ): Promise<void> {
+  const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
+  const vectorDimensions = normalizeVectorDimensions(dimensions);
+  const quotedEmbeddingIndexName = quoteSqlIdentifier(`${tableName}_embedding_idx`, 'embedding index name');
+  const quotedFolderIndexName = quoteSqlIdentifier(`${tableName}_folder_idx`, 'folder index name');
+  const quotedSlugIndexName = quoteSqlIdentifier(`${tableName}_slug_idx`, 'slug index name');
+
   await client.execute(`
-    CREATE TABLE IF NOT EXISTS ${tableName} (
+    CREATE TABLE IF NOT EXISTS ${quotedTableName} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       slug TEXT UNIQUE NOT NULL,
       title TEXT NOT NULL,
       content TEXT NOT NULL,
       folder TEXT NOT NULL DEFAULT 'root',
       tags TEXT DEFAULT '[]',
-      embedding F32_BLOB(${dimensions}),
+      embedding F32_BLOB(${vectorDimensions}),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
   `);
 
   await client.execute(`
-    CREATE INDEX IF NOT EXISTS ${tableName}_embedding_idx
-    ON ${tableName}(libsql_vector_idx(embedding))
+    CREATE INDEX IF NOT EXISTS ${quotedEmbeddingIndexName}
+    ON ${quotedTableName}(libsql_vector_idx(embedding))
   `);
 
   await client.execute(`
-    CREATE INDEX IF NOT EXISTS ${tableName}_folder_idx
-    ON ${tableName}(folder)
+    CREATE INDEX IF NOT EXISTS ${quotedFolderIndexName}
+    ON ${quotedTableName}(folder)
   `);
 
   await client.execute(`
-    CREATE INDEX IF NOT EXISTS ${tableName}_slug_idx
-    ON ${tableName}(slug)
+    CREATE INDEX IF NOT EXISTS ${quotedSlugIndexName}
+    ON ${quotedTableName}(slug)
   `);
 }

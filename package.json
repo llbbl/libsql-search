@@ -26,7 +26,11 @@
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "pnpm build"
+    "check:deno": "deno task check",
+    "smoke:package": "node ./scripts/smoke-package.mjs",
+    "validate:package": "tsc --noEmit && rollup -c && rollup -c rollup.dts.config.js && node ./scripts/smoke-package.mjs",
+    "validate:release": "pnpm audit --audit-level moderate && pnpm test:coverage && pnpm validate:package && pnpm check:deno",
+    "prepublishOnly": "pnpm validate:release"
   },
   "keywords": [
     "libsql",
@@ -50,7 +54,7 @@
   },
   "homepage": "https://github.com/llbbl/libsql-search#readme",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": ">=22.12.0"
   },
   "peerDependencies": {
     "@libsql/client": "^0.15.0"

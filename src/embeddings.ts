@@ -2,8 +2,7 @@
  * Multi-provider embedding generation
  * Supports local (Xenova), Gemini, and OpenAI
  */
-
-import { pipeline } from '@xenova/transformers';
+import type { FeatureExtractionPipeline } from '@xenova/transformers';
 
 export type EmbeddingProvider = 'local' | 'gemini' | 'openai';
 
@@ -15,7 +14,7 @@ export interface EmbeddingOptions {
 }
 
 interface ProviderCache {
-  local?: any;
+  local?: FeatureExtractionPipeline;
   gemini?: any;
   openai?: any;
 }
@@ -37,6 +36,17 @@ function getEnvironmentVariable(name: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+async function getLocalEmbeddingModel(): Promise<FeatureExtractionPipeline> {
+  if (!providerCache.local) {
+    console.log('Loading local embedding model (Xenova/all-MiniLM-L6-v2)...');
+    const { pipeline } = await import('@xenova/transformers');
+    providerCache.local = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+    console.log('Local model loaded successfully');
+  }
+
+  return providerCache.local;
 }
 
 /**
@@ -75,18 +85,14 @@ async function generateLocalEmbedding(
   text: string,
   targetDimensions: number
 ): Promise<number[]> {
-  if (!providerCache.local) {
-    console.log('Loading local embedding model (Xenova/all-MiniLM-L6-v2)...');
-    providerCache.local = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-    console.log('Local model loaded successfully');
-  }
+  const model = await getLocalEmbeddingModel();
 
-  const output = await providerCache.local(text, {
+  const output = await model(text, {
     pooling: 'mean',
     normalize: true
   });
 
-  const embedding = Array.from(output.data) as number[];
+  const embedding = Array.from(output.data as ArrayLike<number>);
   return padEmbedding(embedding, targetDimensions);
 }
 

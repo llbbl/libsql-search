@@ -13,7 +13,8 @@ import {
 const geminiMock = vi.hoisted(() => ({
   keys: [] as string[],
   modelRequests: [] as Array<{ key: string; model: string }>,
-  embedContent: vi.fn(async (text: string) => ({
+  requestOptions: [] as unknown[],
+  embedContent: vi.fn(async (text: string, _options?: unknown) => ({
     embedding: {
       values: new Array(768).fill(text.length)
     }
@@ -33,7 +34,10 @@ vi.mock('@google/generative-ai', () => ({
       geminiMock.modelRequests.push({ key: this.key, model: config.model });
 
       return {
-        embedContent: geminiMock.embedContent
+        embedContent: (text: string, options?: unknown) => {
+          geminiMock.requestOptions.push(options);
+          return geminiMock.embedContent(text, options);
+        }
       };
     }
   }
@@ -47,6 +51,7 @@ describe('embeddings', () => {
     delete process.env.OPENAI_API_KEY;
     geminiMock.keys = [];
     geminiMock.modelRequests = [];
+    geminiMock.requestOptions = [];
     geminiMock.embedContent.mockClear();
   });
 
@@ -453,6 +458,65 @@ describe('embeddings', () => {
       })).rejects.not.toThrow(/super-secret-key|should-not-appear|api_key=secret/);
     });
 
+    it('redacts the exact OpenAI credential from transport rejections', async () => {
+      const secret = 'sk-literal-openai-secret';
+      const fetchMock = vi.fn().mockRejectedValue(
+        new Error(`transport failed for credential ${secret}`)
+      );
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      let message = '';
+      try {
+        await generateEmbedding('test', {
+          provider: 'openai',
+          apiKey: secret,
+          dimensions: 2
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('openai embedding error: API request failed');
+      expect(message).toContain('transport failed');
+      expect(message).toContain('[redacted]');
+      expect(message).not.toContain(secret);
+    });
+
+    it('redacts the exact Gemini credential from SDK rejections', async () => {
+      const secret = 'literal-gemini-secret';
+      geminiMock.embedContent.mockRejectedValueOnce(
+        new Error(`SDK rejected credential ${secret}`)
+      );
+
+      let message = '';
+      try {
+        await generateEmbedding('test', {
+          provider: 'gemini',
+          apiKey: secret
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('gemini embedding error: API request failed');
+      expect(message).toContain('SDK rejected');
+      expect(message).toContain('[redacted]');
+      expect(message).not.toContain(secret);
+    });
+
+    it('passes AbortSignal to Gemini request options', async () => {
+      await generateEmbedding('test', {
+        provider: 'gemini',
+        apiKey: 'gemini-signal-key'
+      });
+
+      expect(geminiMock.requestOptions).toHaveLength(1);
+      expect(geminiMock.requestOptions[0]).toEqual({
+        signal: expect.any(AbortSignal)
+      });
+    });
+
     it('times out hosted provider calls with a safe error', async () => {
       const fetchMock = vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
         init.signal?.addEventListener('abort', () => {
@@ -470,14 +534,80 @@ describe('embeddings', () => {
       })).rejects.toThrow('openai embedding error: API request timed out after 1ms');
     });
 
-    it('times out even when a hosted provider SDK ignores AbortSignal', async () => {
-      geminiMock.embedContent.mockImplementationOnce(() => new Promise(() => {}));
+    it('times out a signal-ignorant in-flight Gemini request deterministically', async () => {
+      vi.useFakeTimers();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      geminiMock.embedContent.mockImplementationOnce(() => {
+        markStarted();
+        return new Promise(() => {});
+      });
 
-      await expect(generateEmbedding('test', {
+      try {
+        const embeddingPromise = generateEmbedding('test', {
+          provider: 'gemini',
+          apiKey: 'gemini-timeout-key',
+          timeoutMs: 1000
+        });
+
+        await started;
+        const rejection = expect(embeddingPromise).rejects.toThrow(
+          'gemini embedding error: API request timed out after 1000ms'
+        );
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not start later Gemini batch items after caller abort and late item resolution', async () => {
+      const controller = new AbortController();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      let resolveFirst: (value: unknown) => void = () => {};
+      geminiMock.embedContent.mockImplementationOnce(() => {
+        markStarted();
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      });
+
+      const embeddingPromise = generateEmbeddings(['first', 'second'], {
         provider: 'gemini',
-        apiKey: 'gemini-timeout-key',
-        timeoutMs: 1
-      })).rejects.toThrow('gemini embedding error: API request timed out after 1ms');
+        apiKey: 'gemini-abort-key',
+        timeoutMs: 30_000,
+        signal: controller.signal
+      });
+
+      await started;
+      expect(geminiMock.embedContent).toHaveBeenCalledTimes(1);
+      controller.abort();
+
+      await expect(embeddingPromise).rejects.toThrow('gemini embedding error: API request was aborted');
+
+      resolveFirst({
+        embedding: {
+          values: new Array(768).fill(1)
+        }
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(geminiMock.embedContent).toHaveBeenCalledTimes(1);
+      expect(geminiMock.embedContent).toHaveBeenCalledWith(
+        'first',
+        { signal: expect.any(AbortSignal) }
+      );
+      expect(geminiMock.requestOptions).toHaveLength(1);
+      expect(geminiMock.requestOptions[0]).toEqual({
+        signal: expect.any(AbortSignal)
+      });
     });
 
     it('returns provider batch result objects from provider clients', async () => {

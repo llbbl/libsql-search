@@ -164,8 +164,14 @@ function hasOwnProperty(value: object, property: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, property);
 }
 
-function redactErrorText(value: unknown): string {
-  const raw = value instanceof Error ? value.message : String(value);
+function redactErrorText(value: unknown, exactSecrets: readonly string[] = []): string {
+  let raw = value instanceof Error ? value.message : String(value);
+
+  for (const secret of exactSecrets) {
+    if (secret.length > 0) {
+      raw = raw.split(secret).join('[redacted]');
+    }
+  }
 
   return raw
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
@@ -182,8 +188,13 @@ function redactErrorText(value: unknown): string {
     .slice(0, 300);
 }
 
-function providerError(provider: EmbeddingProvider, message: string, cause?: unknown): Error {
-  const safeCause = cause === undefined ? '' : `: ${redactErrorText(cause).trim()}`;
+function providerError(
+  provider: EmbeddingProvider,
+  message: string,
+  cause?: unknown,
+  exactSecrets: readonly string[] = []
+): Error {
+  const safeCause = cause === undefined ? '' : `: ${redactErrorText(cause, exactSecrets).trim()}`;
   return new Error(`${provider} embedding error: ${message}${safeCause}`);
 }
 
@@ -196,7 +207,8 @@ async function withTimeout<T>(
   operation: string,
   timeoutMs: number,
   run: (signal: AbortSignal) => Promise<T>,
-  parentSignal?: AbortSignal
+  parentSignal?: AbortSignal,
+  exactSecrets: readonly string[] = []
 ): Promise<T> {
   if (parentSignal?.aborted) {
     throw providerError(provider, `${operation} was aborted`);
@@ -233,7 +245,7 @@ async function withTimeout<T>(
       throw error;
     }
 
-    throw providerError(provider, `${operation} failed`, error);
+    throw providerError(provider, `${operation} failed`, error, exactSecrets);
   } finally {
     clearTimeout(timeout);
     parentSignal?.removeEventListener('abort', onParentAbort);
@@ -322,6 +334,35 @@ function validateEmbeddingVector(
   return embedding;
 }
 
+function throwIfAborted(
+  provider: EmbeddingProvider,
+  operation: string,
+  signal: AbortSignal
+): void {
+  if (signal.aborted) {
+    throw providerError(provider, `${operation} was aborted`);
+  }
+}
+
+async function embedSequentially(
+  provider: EmbeddingProvider,
+  operation: string,
+  texts: string[],
+  signal: AbortSignal,
+  embedOne: (text: string, signal: AbortSignal) => Promise<number[]>
+): Promise<number[][]> {
+  const results: number[][] = [];
+
+  for (const text of texts) {
+    throwIfAborted(provider, operation, signal);
+    const embedding = await embedOne(text, signal);
+    throwIfAborted(provider, operation, signal);
+    results.push(embedding);
+  }
+
+  return results;
+}
+
 function createProviderMetadata(
   provider: EmbeddingProvider,
   dimensions: number
@@ -405,20 +446,16 @@ class LocalEmbeddingProvider implements EmbeddingProviderClient {
       'local',
       'model inference',
       this.#timeoutMs,
-      async () => {
+      async (signal) => {
         const model = await getLocalEmbeddingModel(this.metadata.model);
-        const results: number[][] = [];
-
-        for (const text of texts) {
+        return embedSequentially('local', 'model inference', texts, signal, async (text) => {
           const output = await model(text, {
             pooling: 'mean',
             normalize: true
           });
           const embedding = Array.from(output.data as ArrayLike<number>);
-          results.push(padEmbedding(embedding, this.metadata.dimensions));
-        }
-
-        return results;
+          return padEmbedding(embedding, this.metadata.dimensions);
+        });
       },
       options.signal
     );
@@ -453,25 +490,22 @@ class GeminiEmbeddingProvider implements EmbeddingProviderClient {
       'gemini',
       'API request',
       this.#timeoutMs,
-      async () => {
+      async (signal) => {
         const { GoogleGenerativeAI } = await import('@google/generative-ai');
         const genAI = new GoogleGenerativeAI(this.#apiKey);
         const model = genAI.getGenerativeModel({ model: this.metadata.model });
-        const results: number[][] = [];
-
-        for (const text of texts) {
-          const result = await model.embedContent(text) as GeminiEmbeddingResult;
+        return embedSequentially('gemini', 'API request', texts, signal, async (text, itemSignal) => {
+          const result = await model.embedContent(text, { signal: itemSignal }) as GeminiEmbeddingResult;
           const values = result.embedding?.values;
           if (!Array.isArray(values)) {
             throw new Error('Gemini response did not include embedding values');
           }
 
-          results.push(values);
-        }
-
-        return results;
+          return values;
+        });
       },
-      options.signal
+      options.signal,
+      [this.#apiKey]
     );
 
     return createEmbeddingBatchResult(
@@ -545,7 +579,8 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderClient {
           return parsed;
         });
       },
-      options.signal
+      options.signal,
+      [this.#apiKey]
     );
 
     return createEmbeddingBatchResult(

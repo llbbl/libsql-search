@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   generateEmbedding,
   padEmbedding,
@@ -7,6 +7,23 @@ import {
 } from '../src/embeddings.js';
 
 describe('embeddings', () => {
+  let originalOpenAIKey: string | undefined;
+
+  beforeEach(() => {
+    originalOpenAIKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalOpenAIKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAIKey;
+    }
+  });
+
   describe('padEmbedding', () => {
     it('should pad embedding to target dimensions', () => {
       const embedding = [1, 2, 3];
@@ -110,6 +127,53 @@ describe('embeddings', () => {
       await expect(
         generateEmbedding('test', { provider: 'openai' })
       ).rejects.toThrow('OPENAI_API_KEY is required');
+    });
+
+    it('should use Deno env fallback for OpenAI API key', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ embedding: [1, 2, 3] }] })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+      vi.stubGlobal('Deno', {
+        env: {
+          get: vi.fn((name: string) => name === 'OPENAI_API_KEY' ? 'deno-key' : undefined)
+        }
+      });
+
+      const embedding = await generateEmbedding('test', {
+        provider: 'openai',
+        dimensions: 3
+      });
+
+      expect(embedding).toEqual([1, 2, 3]);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.openai.com/v1/embeddings',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer deno-key'
+          })
+        })
+      );
+    });
+
+    it('should keep missing OpenAI key error when Deno env access is denied', async () => {
+      const fetchMock = vi.fn();
+
+      vi.stubGlobal('fetch', fetchMock);
+      vi.stubGlobal('Deno', {
+        env: {
+          get: vi.fn(() => {
+            throw new Error('Requires env access');
+          })
+        }
+      });
+
+      await expect(
+        generateEmbedding('test', { provider: 'openai' })
+      ).rejects.toThrow('OPENAI_API_KEY is required');
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "libsql-search",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Semantic search for static sites using libSQL/Turso with multi-provider embeddings",
   "type": "module",
   "packageManager": "pnpm@10.34.5",

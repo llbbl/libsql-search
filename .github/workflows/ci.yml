@@ -19,8 +19,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -46,8 +44,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -63,7 +59,7 @@ jobs:
 
       - name: Check build artifacts
         run: |
-          test -f dist/index.js || exit 1
+          test -f dist/index.cjs || exit 1
           test -f dist/index.esm.js || exit 1
           test -f dist/index.d.ts || exit 1
 
@@ -76,8 +72,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

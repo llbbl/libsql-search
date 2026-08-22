@@ -6,10 +6,23 @@
 
 // Export embedding utilities
 export {
+  createEmbeddingProvider,
   generateEmbedding,
+  generateEmbeddings,
+  getEmbeddingProviderMetadata,
   padEmbedding,
   prepareTextForEmbedding,
+  validateEmbeddingBatch,
   type EmbeddingProvider,
+  type EmbeddingIntent,
+  type EmbeddingBatchMode,
+  type EmbeddingBatchBehavior,
+  type EmbeddingProviderMetadata,
+  type EmbeddingRequestOptions,
+  type EmbeddingProviderClient,
+  type EmbeddingBatchResult,
+  type EmbeddingBatchItemResult,
+  type EmbeddingBatchItem,
   type EmbeddingOptions
 } from './embeddings.js';
 

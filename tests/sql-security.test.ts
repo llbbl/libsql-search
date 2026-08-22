@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Client } from '@libsql/client';
 import { createClient } from '@libsql/client';
+import { mkdir, rm, writeFile } from 'fs/promises';
+import { join } from 'path';
 import { createTable, indexContent } from '../src/indexer.js';
 import {
   getAllArticles,
@@ -154,10 +156,49 @@ describe('SQL input security', () => {
       ...(limit === undefined ? {} : { limit })
     });
 
-    expect(generateEmbedding).toHaveBeenCalledWith('guide', {});
+    expect(generateEmbedding).toHaveBeenCalledWith('guide', { intent: 'query' });
     expect(client.execute).toHaveBeenCalledWith(expect.objectContaining({
       args: [JSON.stringify([0.1, 0.2, 0.3]), expectedLimit]
     }));
+  });
+
+  it('defaults indexing embeddings to document intent', async () => {
+    const client = createMockClient();
+    const contentPath = join(process.cwd(), 'test-content-intent');
+
+    await mkdir(contentPath, { recursive: true });
+    await writeFile(join(contentPath, 'guide.md'), '---\ntitle: Guide\n---\n\nContent');
+
+    try {
+      await indexContent({
+        client,
+        contentPath,
+        embeddingOptions: { provider: 'openai', apiKey: 'key', intent: undefined }
+      });
+
+      expect(generateEmbedding).toHaveBeenCalledWith(
+        'Guide\n\n\nContent',
+        { provider: 'openai', apiKey: 'key', intent: 'document' }
+      );
+    } finally {
+      await rm(contentPath, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves explicit embedding intent from callers', async () => {
+    const client = createMockClient();
+
+    await search({
+      client,
+      query: 'guide',
+      embeddingOptions: { provider: 'openai', apiKey: 'key', intent: 'document' }
+    });
+
+    expect(generateEmbedding).toHaveBeenCalledWith('guide', {
+      provider: 'openai',
+      apiKey: 'key',
+      intent: 'document'
+    });
   });
 
   it('rejects invalid vector dimensions before database calls', async () => {

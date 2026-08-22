@@ -12,12 +12,25 @@
 - `getArticlesByFolder`
 - `getFolders`
 - `generateEmbedding`
+- `generateEmbeddings`
+- `createEmbeddingProvider`
+- `getEmbeddingProviderMetadata`
+- `validateEmbeddingBatch`
 - `padEmbedding`
 - `prepareTextForEmbedding`
 
 It also exports these types:
 
 - `EmbeddingProvider`
+- `EmbeddingIntent`
+- `EmbeddingBatchMode`
+- `EmbeddingBatchBehavior`
+- `EmbeddingProviderMetadata`
+- `EmbeddingRequestOptions`
+- `EmbeddingProviderClient`
+- `EmbeddingBatchResult`
+- `EmbeddingBatchItemResult`
+- `EmbeddingBatchItem`
 - `EmbeddingOptions`
 - `IndexerOptions`
 - `IndexedDocument`
@@ -93,6 +106,8 @@ Behavior notes:
 - `indexContent()` deletes existing rows in the target table before rebuilding
 - frontmatter `title`, `description`, and `tags` are folded into the embedding
   text
+- embeddings default to `intent: "document"` unless `embeddingOptions.intent`
+  is set explicitly
 - if a file has no frontmatter title, the filename becomes the title
 
 ## `search(options)`
@@ -135,6 +150,9 @@ interface SearchResult {
 
 Lower `distance` values are better matches.
 
+Search embeddings default to `intent: "query"` unless
+`embeddingOptions.intent` is set explicitly.
+
 ## Article Retrieval Helpers
 
 ### `getAllArticles(client, tableName?)`
@@ -160,6 +178,91 @@ All article retrieval helpers validate `tableName` before executing SQL.
 ### `generateEmbedding(text, options?)`
 
 Generates an embedding for arbitrary text using the selected provider.
+
+### `generateEmbeddings(texts, options?)`
+
+Generates an ordered batch of embeddings. Empty batches return `[]` without
+creating a hosted provider client or making a network request.
+
+### `createEmbeddingProvider(options?)`
+
+Creates a provider client with immutable metadata and an `embed(texts, options?)`
+method. Provider clients return a rich `EmbeddingBatchResult`; the compatibility
+helpers `generateEmbedding()` and `generateEmbeddings()` continue returning only
+vectors.
+
+```ts
+const provider = createEmbeddingProvider({
+  provider: "openai",
+  apiKey: process.env.OPENAI_API_KEY,
+  dimensions: 1536,
+});
+
+console.log(provider.metadata);
+```
+
+Provider metadata includes:
+
+- `name`
+- `model`
+- `dimensions`
+- `batch.mode`
+- `batch.maxSize`, when the provider has a hard maximum
+
+Hosted provider clients are scoped to their options. The library does not reuse
+a Gemini or OpenAI client created with a different API key or configuration.
+
+### `getEmbeddingProviderMetadata(options?)`
+
+Returns the same metadata exposed by `createEmbeddingProvider(options).metadata`
+without resolving hosted-provider credentials.
+
+Provider batch metadata uses:
+
+```ts
+type EmbeddingBatchMode = "native" | "sequential";
+
+interface EmbeddingBatchBehavior {
+  mode: EmbeddingBatchMode;
+  maxSize?: number;
+}
+```
+
+`"native"` means the upstream provider accepts the batch in one request.
+`"sequential"` means the library accepts an input batch but processes items one
+at a time. If `maxSize` is present, the library enforces it before provider or
+network work.
+
+Provider clients return:
+
+```ts
+interface EmbeddingBatchResult {
+  embeddings: number[][];
+  provider: "local" | "gemini" | "openai";
+  model: string;
+  dimensions: number;
+  intent: "document" | "query";
+}
+```
+
+### `validateEmbeddingBatch(items, expectedCount, expectedDimensions, provider)`
+
+Validates provider results before they are written to the database. It checks
+cardinality, dimensions, finite numeric values, and indexed batch ordering.
+
+`EmbeddingOptions` supports:
+
+```ts
+interface EmbeddingOptions {
+  provider?: "local" | "gemini" | "openai";
+  apiKey?: string;
+  dimensions?: number;
+  maxLength?: number;
+  intent?: "document" | "query";
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+```
 
 ### `padEmbedding(embedding, targetDimensions)`
 

@@ -149,7 +149,10 @@ async function processFile(
     tags
   });
 
-  const embedding = await generateEmbedding(embeddingText, embeddingOptions);
+  const embedding = await generateEmbedding(embeddingText, {
+    ...embeddingOptions,
+    intent: embeddingOptions.intent ?? 'document'
+  });
 
   return {
     slug,

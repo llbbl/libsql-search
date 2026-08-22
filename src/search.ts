@@ -40,7 +40,10 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
   const resultLimit = normalizeSearchLimit(limit);
 
   // Generate embedding for query
-  const queryEmbedding = await generateEmbedding(query, embeddingOptions);
+  const queryEmbedding = await generateEmbedding(query, {
+    ...embeddingOptions,
+    intent: embeddingOptions.intent ?? 'query'
+  });
 
   // Perform vector search
   const results = await client.execute({

@@ -4,6 +4,7 @@
 
 import type { Client } from '@libsql/client';
 import { generateEmbedding, type EmbeddingOptions } from './embeddings.js';
+import { normalizeSearchLimit, quoteSqlIdentifier } from './sql.js';
 
 export interface SearchOptions {
   client: Client;
@@ -35,6 +36,8 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
     tableName = 'articles',
     embeddingOptions = {}
   } = options;
+  const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
+  const resultLimit = normalizeSearchLimit(limit);
 
   // Generate embedding for query
   const queryEmbedding = await generateEmbedding(query, embeddingOptions);
@@ -51,12 +54,12 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
         tags,
         created_at,
         vector_distance_cos(embedding, vector(?)) as distance
-      FROM ${tableName}
+      FROM ${quotedTableName}
       WHERE embedding IS NOT NULL
       ORDER BY distance
       LIMIT ?
     `,
-    args: [JSON.stringify(queryEmbedding), limit]
+    args: [JSON.stringify(queryEmbedding), resultLimit]
   });
 
   // Parse and format results
@@ -87,9 +90,10 @@ export async function getAllArticles(
   created_at: string;
   updated_at: string;
 }>> {
+  const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
   const results = await client.execute(`
     SELECT id, slug, title, folder, tags, created_at, updated_at
-    FROM ${tableName}
+    FROM ${quotedTableName}
     ORDER BY title
   `);
 
@@ -121,10 +125,11 @@ export async function getArticleBySlug(
   created_at: string;
   updated_at: string;
 } | null> {
+  const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
   const results = await client.execute({
     sql: `
       SELECT id, slug, title, content, folder, tags, created_at, updated_at
-      FROM ${tableName}
+      FROM ${quotedTableName}
       WHERE slug = ?
       LIMIT 1
     `,
@@ -162,10 +167,11 @@ export async function getArticlesByFolder(
   folder: string;
   tags: string[];
 }>> {
+  const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
   const results = await client.execute({
     sql: `
       SELECT id, slug, title, folder, tags
-      FROM ${tableName}
+      FROM ${quotedTableName}
       WHERE folder = ?
       ORDER BY title
     `,
@@ -188,9 +194,10 @@ export async function getFolders(
   client: Client,
   tableName: string = 'articles'
 ): Promise<string[]> {
+  const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
   const results = await client.execute(`
     SELECT DISTINCT folder
-    FROM ${tableName}
+    FROM ${quotedTableName}
     ORDER BY folder
   `);
 

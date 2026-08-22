@@ -35,3 +35,24 @@ coverage/
 
 # Test artifacts
 test-content/
+
+# Local AI/LLM tooling and instructions
+AGENTS.md
+AGENTS.local.md
+CLAUDE.md
+CLAUDE.local.md
+CODEX.md
+GEMINI.md
+LLM.md
+.agents/
+.ai/
+.aider*
+.claude/
+.codex/
+.continue/
+.cursor/
+.gemini/
+.llm/
+.roo/
+.windsurf/
+.github/copilot-instructions.md

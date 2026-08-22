@@ -2,8 +2,13 @@ name: Publish Package
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+    paths-ignore:
+      - '.github/**'
+      - 'docs/**'
 
 permissions:
   contents: read
@@ -13,11 +18,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
+  plan:
+    name: Plan Release
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 10
+    if: ${{ github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
     outputs:
-      version: ${{ steps.release-version.outputs.version }}
+      mode: ${{ steps.mode.outputs.mode }}
+      should_release: ${{ steps.auto-plan.outputs.should_release || steps.manual-tag.outputs.should_release }}
+      version: ${{ steps.auto-plan.outputs.version || steps.manual-tag.outputs.version }}
+      tag: ${{ steps.auto-plan.outputs.tag || steps.manual-tag.outputs.tag }}
+      release_sha: ${{ steps.manual-tag.outputs.release_sha || github.sha }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -25,68 +37,223 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 10.34.5
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: '24.19.0'
           package-manager-cache: false
 
-      - name: Setup Deno
+      - name: Determine release mode
+        id: mode
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "${REF_TYPE}" = "tag" ]; then
+            echo "mode=manual" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=auto" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Plan automatic release
+        id: auto-plan
+        if: steps.mode.outputs.mode == 'auto'
+        run: node ./scripts/plan-release.mjs --github-output
+
+      - name: Validate manual tag release
+        id: manual-tag
+        if: steps.mode.outputs.mode == 'manual'
+        run: |
+          git fetch --no-tags origin "main:refs/remotes/origin/main"
+          git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+          tag_target=$(git rev-parse "${GITHUB_REF_NAME}^{commit}")
+          event_target=$(git rev-parse "${GITHUB_SHA}^{commit}")
+
+          if [ "${tag_target}" != "${event_target}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} resolves to ${tag_target}, not event commit ${event_target}; aborting."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${tag_target}" "origin/main"; then
+            echo "Release commit ${tag_target} is not an ancestor of origin/main; aborting."
+            exit 1
+          fi
+
+          version=$(node ./scripts/validate-release-version.mjs "${GITHUB_REF_NAME}")
+          {
+            echo "should_release=true"
+            echo "version=${version}"
+            echo "tag=${GITHUB_REF_NAME}"
+            echo "release_sha=${tag_target}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Validated manual release ${GITHUB_REF_NAME} at ${tag_target}."
+
+      - name: Setup pnpm for manual tag validation
+        if: steps.mode.outputs.mode == 'manual'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.34.5
+
+      - name: Setup Deno for manual tag validation
+        if: steps.mode.outputs.mode == 'manual'
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
 
-      - name: Verify release commit is on main
-        run: |
-          git fetch --no-tags origin main:refs/remotes/origin/main
-
-          if ! git merge-base --is-ancestor "${GITHUB_SHA}" "origin/main"; then
-            echo "Release commit ${GITHUB_SHA} is not an ancestor of origin/main; aborting."
-            exit 1
-          fi
-
-      - name: Install dependencies
+      - name: Install dependencies for manual tag validation
+        if: steps.mode.outputs.mode == 'manual'
         run: pnpm install --frozen-lockfile
 
-      - name: Validate release tag and manifests
-        id: release-version
-        run: |
-          version=$(node ./scripts/validate-release-version.mjs "${GITHUB_REF_NAME}")
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "Validated release version ${version}"
-
-      - name: Run release validation
+      - name: Run manual tag release validation
+        if: steps.mode.outputs.mode == 'manual'
         run: pnpm validate:release
 
-  publish-npm:
-    needs: validate
+  prepare-release:
+    name: Prepare Automatic Release
+    needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: npm
+    timeout-minutes: 40
+    if: needs.plan.outputs.mode == 'auto' && needs.plan.outputs.should_release == 'true'
     permissions:
-      contents: read
-      id-token: write
+      contents: write
+    concurrency:
+      group: release-writer-main
+      cancel-in-progress: false
+    outputs:
+      should_publish: ${{ steps.push-release.outputs.should_publish || 'false' }}
+      version: ${{ steps.release-plan.outputs.version }}
+      tag: ${{ steps.release-plan.outputs.tag }}
+      release_sha: ${{ steps.push-release.outputs.release_sha }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout triggering commit
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
 
-      - name: Verify release tag still points to this commit
+      - name: Fetch fresh main and tags
+        id: fresh-main
         run: |
-          git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-          tag_target=$(git rev-parse "${GITHUB_REF_NAME}^{commit}")
+          git fetch --force origin "main:refs/remotes/origin/main"
+          git fetch --force --tags origin
 
-          if [ "${tag_target}" != "${GITHUB_SHA}" ]; then
-            echo "Remote tag ${GITHUB_REF_NAME} resolves to ${tag_target}, not ${GITHUB_SHA}; aborting publish."
-            exit 1
+          main_sha=$(git rev-parse "refs/remotes/origin/main")
+          if [ "${main_sha}" != "${GITHUB_SHA}" ]; then
+            echo "origin/main is now ${main_sha}, not this run's ${GITHUB_SHA}; a newer run should release the accumulated main state."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          git switch --detach "${main_sha}"
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        if: steps.fresh-main.outputs.current == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.34.5
+
+      - name: Setup Node.js
+        if: steps.fresh-main.outputs.current == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24.19.0'
+          package-manager-cache: false
+
+      - name: Setup Deno
+        if: steps.fresh-main.outputs.current == 'true'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        if: steps.fresh-main.outputs.current == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Recompute release plan and sync manifests
+        id: release-plan
+        if: steps.fresh-main.outputs.current == 'true'
+        run: node ./scripts/plan-release.mjs --write --github-output
+
+      - name: Check remote tag availability
+        id: remote-tag
+        if: steps.release-plan.outputs.should_release == 'true'
+        env:
+          TAG: ${{ steps.release-plan.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Remote tag ${TAG} already exists; skipping automatic publish."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release candidate
+        if: steps.remote-tag.outputs.available == 'true'
+        env:
+          TAG: ${{ steps.release-plan.outputs.tag }}
+        run: |
+          node ./scripts/validate-release-version.mjs "${TAG}"
+          pnpm validate:release
+
+      - name: Commit, tag, and push release
+        id: push-release
+        if: steps.remote-tag.outputs.available == 'true'
+        env:
+          TAG: ${{ steps.release-plan.outputs.tag }}
+          VERSION: ${{ steps.release-plan.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if ! git diff --quiet -- ./package.json ./jsr.json ./deno.json; then
+            git add ./package.json ./jsr.json ./deno.json
+            git commit -m "chore(release): v${VERSION} [skip release]"
+          else
+            echo "Manifests already match v${VERSION}; tagging the current main commit."
+          fi
+
+          git tag -a "${TAG}" -m "Release ${TAG}"
+
+          remote_main=$(git ls-remote origin "refs/heads/main" | cut -f1)
+          if [ "${remote_main}" != "${GITHUB_SHA}" ]; then
+            echo "origin/main moved to ${remote_main} before push; a newer run should release."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git push --atomic origin "HEAD:refs/heads/main" "refs/tags/${TAG}:refs/tags/${TAG}"
+          release_sha=$(git rev-parse HEAD)
+          {
+            echo "release_sha=${release_sha}"
+            echo "should_publish=true"
+          } >> "$GITHUB_OUTPUT"
+
+  publish-npm:
+    name: Publish npm
+    needs:
+      - plan
+      - prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: npm
+    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'manual' || needs.prepare-release.outputs.should_publish == 'true')
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag || needs.plan.outputs.tag }}
+      RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha || needs.plan.outputs.release_sha }}
+      VERSION: ${{ needs.prepare-release.outputs.version || needs.plan.outputs.version }}
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -107,42 +274,54 @@ jobs:
         run: pnpm validate:package
 
       - name: Publish to npm
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           published_version=$(pnpm view "libsql-search@${VERSION}" version 2>/dev/null || true)
-
           if [ "${published_version}" = "${VERSION}" ]; then
             echo "libsql-search@${VERSION} is already published on npm; skipping OIDC publish."
             exit 0
           fi
 
+          node ./scripts/validate-release-version.mjs "${RELEASE_TAG}"
+          git fetch --force --no-tags origin "main:refs/remotes/origin/main"
+          git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          tag_target=$(git rev-parse "${RELEASE_TAG}^{commit}")
+          checkout_sha=$(git rev-parse HEAD)
+
+          if [ "${tag_target}" != "${checkout_sha}" ]; then
+            echo "Remote tag ${RELEASE_TAG} resolves to ${tag_target}, not checked out commit ${checkout_sha}; aborting npm publish."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${checkout_sha}" "origin/main"; then
+            echo "Release commit ${checkout_sha} is no longer an ancestor of origin/main; aborting npm publish."
+            exit 1
+          fi
+
           echo "Publishing libsql-search@${VERSION} to npm with trusted publishing OIDC."
-          pnpm dlx npm@12.0.2 publish --access public --ignore-scripts
+          pnpm dlx npm@12.0.2 publish --provenance --access public --ignore-scripts
 
   publish-jsr:
-    needs: validate
+    name: Publish JSR
+    needs:
+      - plan
+      - prepare-release
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'manual' || needs.prepare-release.outputs.should_publish == 'true')
     permissions:
       contents: read
       id-token: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag || needs.plan.outputs.tag }}
+      RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha || needs.plan.outputs.release_sha }}
+      VERSION: ${{ needs.prepare-release.outputs.version || needs.plan.outputs.version }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
-
-      - name: Verify release tag still points to this commit
-        run: |
-          git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-          tag_target=$(git rev-parse "${GITHUB_REF_NAME}^{commit}")
-
-          if [ "${tag_target}" != "${GITHUB_SHA}" ]; then
-            echo "Remote tag ${GITHUB_REF_NAME} resolves to ${tag_target}, not ${GITHUB_SHA}; aborting publish."
-            exit 1
-          fi
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -164,44 +343,79 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Publish to JSR
-        run: pnpm dlx jsr@0.14.3 publish
+        run: |
+          if deno info "jsr:@logan/libsql-search@${VERSION}" >/dev/null 2>&1; then
+            echo "@logan/libsql-search@${VERSION} is already published on JSR; skipping OIDC publish."
+            exit 0
+          fi
+
+          node ./scripts/validate-release-version.mjs "${RELEASE_TAG}"
+          git fetch --force --no-tags origin "main:refs/remotes/origin/main"
+          git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          tag_target=$(git rev-parse "${RELEASE_TAG}^{commit}")
+          checkout_sha=$(git rev-parse HEAD)
+
+          if [ "${tag_target}" != "${checkout_sha}" ]; then
+            echo "Remote tag ${RELEASE_TAG} resolves to ${tag_target}, not checked out commit ${checkout_sha}; aborting JSR publish."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${checkout_sha}" "origin/main"; then
+            echo "Release commit ${checkout_sha} is no longer an ancestor of origin/main; aborting JSR publish."
+            exit 1
+          fi
+
+          echo "Publishing @logan/libsql-search@${VERSION} to JSR with OIDC."
+          pnpm dlx jsr@0.14.3 publish
 
   release:
+    name: Create GitHub Release
     needs:
-      - validate
+      - plan
+      - prepare-release
       - publish-npm
       - publish-jsr
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: always() && needs.publish-npm.result == 'success' && needs.publish-jsr.result == 'success'
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag || needs.plan.outputs.tag }}
+      RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha || needs.plan.outputs.release_sha }}
+      VERSION: ${{ needs.prepare-release.outputs.version || needs.plan.outputs.version }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
 
-      - name: Verify release tag still points to this commit
+      - name: Verify release tag
         run: |
-          git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-          tag_target=$(git rev-parse "${GITHUB_REF_NAME}^{commit}")
+          git fetch --force --no-tags origin "main:refs/remotes/origin/main"
+          git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          tag_target=$(git rev-parse "${RELEASE_TAG}^{commit}")
+          checkout_sha=$(git rev-parse HEAD)
 
-          if [ "${tag_target}" != "${GITHUB_SHA}" ]; then
-            echo "Remote tag ${GITHUB_REF_NAME} resolves to ${tag_target}, not ${GITHUB_SHA}; aborting release notes."
+          if [ "${tag_target}" != "${checkout_sha}" ]; then
+            echo "Remote tag ${RELEASE_TAG} resolves to ${tag_target}, not checked out commit ${checkout_sha}; aborting release notes."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${checkout_sha}" "origin/main"; then
+            echo "Release commit ${checkout_sha} is no longer an ancestor of origin/main; aborting release notes."
             exit 1
           fi
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          tag="v${VERSION}"
-
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            echo "GitHub Release ${tag} already exists; skipping create."
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "GitHub Release ${RELEASE_TAG} already exists; skipping create."
             exit 0
           fi
 
-          gh release create "${tag}" --verify-tag --generate-notes --title "${tag}"
+          gh release create "${RELEASE_TAG}" --verify-tag --generate-notes --title "${RELEASE_TAG}"

@@ -13,16 +13,16 @@ Use it when you want:
 
 - a small TypeScript library instead of a hosted search product
 - one search index shared across static-site builds and app routes
-- local or API-based embeddings behind the same indexing/search API
+- local or hosted embeddings behind the same indexing/search API
 - direct control over table names, dimensions, content shape, and deployment
 
 ## What It Supports
 
 - Markdown indexing from local directories with frontmatter via `gray-matter`
 - libSQL/Turso storage and vector search
-- Embedding providers that exist in the code today: local
-  `Xenova/all-MiniLM-L6-v2`, Google Gemini `text-embedding-004`, and OpenAI
-  `text-embedding-3-small` and `text-embedding-3-large`
+- Embedding providers: local `Xenova/all-MiniLM-L6-v2`, Cloudflare Workers AI
+  `@cf/baai/bge-m3`, Google Gemini `text-embedding-004`, and OpenAI
+  `text-embedding-3-small` / `text-embedding-3-large`
 - npm distribution plus JSR publishing
 
 ## Install
@@ -97,6 +97,8 @@ Important behavior:
 - Call `createTable()` before indexing or searching.
 - Keep dimensions aligned across table creation, indexing, and search queries.
 - `indexContent()` clears existing rows before rebuilding the index.
+- `local` is the default offline provider; Cloudflare is the recommended hosted
+  option and uses 1024 dimensions.
 
 ## Core API
 

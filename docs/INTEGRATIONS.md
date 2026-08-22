@@ -127,14 +127,18 @@ const client = createClient({
   authToken: process.env.TURSO_AUTH_TOKEN!,
 });
 
-await createTable(client, "articles", 768);
+const embeddingProvider =
+  process.env.EMBEDDING_PROVIDER as "local" | "cloudflare" | "gemini" | "openai" | undefined;
+const embeddingDimensions = embeddingProvider === "cloudflare" ? 1024 : 768;
+
+await createTable(client, "articles", embeddingDimensions);
 
 await indexContent({
   client,
   contentPath: "./content",
   embeddingOptions: {
-    provider: process.env.EMBEDDING_PROVIDER as "local" | "gemini" | "openai" | undefined,
-    dimensions: 768,
+    provider: embeddingProvider,
+    dimensions: embeddingDimensions,
   },
 });
 ```

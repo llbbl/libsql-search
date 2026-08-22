@@ -1,8 +1,9 @@
 # Embedding Providers
 
-`libsql-search` currently supports three embedding providers:
+`libsql-search` currently supports four embedding providers:
 
 - `local`
+- `cloudflare`
 - `gemini`
 - `openai`
 
@@ -14,8 +15,10 @@ query time.
 
 ```ts
 interface EmbeddingOptions {
-  provider?: "local" | "gemini" | "openai";
+  provider?: "local" | "cloudflare" | "gemini" | "openai";
   apiKey?: string;
+  accountId?: string;
+  apiToken?: string;
   dimensions?: number;
   maxLength?: number;
   intent?: "document" | "query";
@@ -30,8 +33,10 @@ interface EmbeddingOptions {
 - `intent` can be `"document"` or `"query"`; indexing defaults to
   `"document"` and search defaults to `"query"` unless explicitly set
 - `timeoutMs` defaults to `30000`
-- `apiKey` is optional in code, but required for hosted providers unless the
-  matching environment variable is available
+- `apiKey` is used by Gemini and OpenAI and falls back to `GEMINI_API_KEY` or
+  `OPENAI_API_KEY`
+- `accountId` and `apiToken` are used by Cloudflare and fall back to
+  `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
 
 ## Provider Contract
 
@@ -39,7 +44,7 @@ Each provider exposes immutable metadata:
 
 ```ts
 interface EmbeddingProviderMetadata {
-  name: "local" | "gemini" | "openai";
+  name: "local" | "cloudflare" | "gemini" | "openai";
   model: string;
   dimensions: number;
   batch: {
@@ -78,9 +83,9 @@ Lower-level provider clients return an `EmbeddingBatchResult` with the validated
 vectors plus provider, model, dimensions, and intent. The compatibility helpers
 `generateEmbedding()` and `generateEmbeddings()` return only arrays.
 
-Gemini and OpenAI clients are scoped to their current options. They are not
-cached globally across different credentials or configurations. The local Xenova
-model can be cached by model name.
+Cloudflare, Gemini, and OpenAI clients are scoped to their current options. They
+are not cached globally across different credentials or configurations. The
+local Xenova model can be cached by model name.
 
 Hosted provider failures are reported with bounded provider/status/request-id
 context and without raw upstream bodies, credentials, Authorization headers, or
@@ -108,6 +113,36 @@ Notes:
 - batch metadata is `{ mode: "sequential" }`
 - the first run downloads the model and can take longer on a fresh machine
 - no API key is required
+- this remains the default provider for backward compatibility and offline use
+
+## Cloudflare Workers AI
+
+Provider value: `cloudflare`
+
+Cloudflare is the recommended hosted provider for low-cost Markdown search.
+It uses Workers AI `@cf/baai/bge-m3` through Cloudflare's OpenAI-compatible
+embeddings endpoint.
+
+```ts
+embeddingOptions: {
+  provider: "cloudflare",
+  accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+  apiToken: process.env.CLOUDFLARE_API_TOKEN,
+}
+```
+
+Behavior:
+
+- if `accountId` is omitted, the library reads `CLOUDFLARE_ACCOUNT_ID`
+- if `apiToken` is omitted, the library reads `CLOUDFLARE_API_TOKEN`
+- blank Cloudflare credentials are treated as missing
+- `@cf/baai/bge-m3` returns 1024 dimensions
+- metadata reports `@cf/baai/bge-m3` and 1024 dimensions without requiring
+  credentials
+- batch metadata is `{ mode: "native" }`
+- response items are reordered by provider-supplied index before being returned
+- Cloudflare does not accept custom dimensions in this provider; use
+  `createTable(client, "articles", 1024)` for Cloudflare-backed indexes
 
 ## Gemini
 
@@ -156,7 +191,8 @@ Behavior:
 
 ## Dimension Guidelines
 
-- `768` is the easiest cross-provider target in the current implementation
+- `local` defaults to `768`
+- `cloudflare` is fixed at `1024`
 - local embeddings are padded from 384 to your target size
 - Gemini stays at 768
 - OpenAI can be used at 1536 or 3072, or another supported OpenAI dimension

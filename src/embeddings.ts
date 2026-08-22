@@ -1,10 +1,10 @@
 /**
  * Multi-provider embedding generation
- * Supports local (Xenova), Gemini, and OpenAI
+ * Supports local (Xenova), Gemini, OpenAI, and Cloudflare Workers AI
  */
 import type { FeatureExtractionPipeline } from '@xenova/transformers';
 
-export type EmbeddingProvider = 'local' | 'gemini' | 'openai';
+export type EmbeddingProvider = 'local' | 'gemini' | 'openai' | 'cloudflare';
 export type EmbeddingIntent = 'document' | 'query';
 export type EmbeddingBatchMode = 'native' | 'sequential';
 
@@ -41,6 +41,8 @@ export interface EmbeddingBatchResult {
 export interface EmbeddingOptions {
   provider?: EmbeddingProvider;
   apiKey?: string;
+  accountId?: string;
+  apiToken?: string;
   dimensions?: number;
   maxLength?: number;
   intent?: EmbeddingIntent;
@@ -87,6 +89,8 @@ const GEMINI_MODEL = 'text-embedding-004';
 const OPENAI_SMALL_MODEL = 'text-embedding-3-small';
 const OPENAI_LARGE_MODEL = 'text-embedding-3-large';
 const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
+const CLOUDFLARE_MODEL = '@cf/baai/bge-m3';
+const CLOUDFLARE_DIMENSIONS = 1024;
 
 const localModelCacheByModel = new Map<string, LocalModelCache>();
 
@@ -136,6 +140,7 @@ function resolveProviderName(provider: EmbeddingProvider | undefined): Embedding
     case 'local':
     case 'gemini':
     case 'openai':
+    case 'cloudflare':
       return provider ?? 'local';
     default:
       throw new Error(`Unknown embedding provider: ${String(provider)}`);
@@ -158,6 +163,11 @@ function truncateTexts(texts: string[], maxLength: number): string[] {
 
 function getOpenAIModel(dimensions: number): string {
   return dimensions <= 1536 ? OPENAI_SMALL_MODEL : OPENAI_LARGE_MODEL;
+}
+
+function getOptionalTrimmedCredential(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 function hasOwnProperty(value: object, property: string): boolean {
@@ -200,6 +210,19 @@ function providerError(
 
 function getResponseHeader(response: Response, name: string): string | undefined {
   return response.headers.get(name) ?? undefined;
+}
+
+function getSafeResponseHeader(response: Response, name: string): string | undefined {
+  const value = getResponseHeader(response, name)?.trim();
+  if (!value) {
+    return undefined;
+  }
+
+  return value.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 128);
+}
+
+function createCloudflareEmbeddingsUrl(accountId: string): string {
+  return `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/embeddings`;
 }
 
 async function withTimeout<T>(
@@ -389,6 +412,13 @@ function createProviderMetadata(
         dimensions,
         batch: Object.freeze({ mode: 'native' as const, maxSize: 2048 })
       });
+    case 'cloudflare':
+      return Object.freeze({
+        name: 'cloudflare' as const,
+        model: CLOUDFLARE_MODEL,
+        dimensions: CLOUDFLARE_DIMENSIONS,
+        batch: Object.freeze({ mode: 'native' as const })
+      });
   }
 }
 
@@ -398,6 +428,17 @@ function getEffectiveDimensions(
 ): number {
   if (provider === 'gemini') {
     return DEFAULT_DIMENSIONS;
+  }
+
+  if (provider === 'cloudflare') {
+    if (dimensions !== undefined && dimensions !== CLOUDFLARE_DIMENSIONS) {
+      throw providerError(
+        'cloudflare',
+        `@cf/baai/bge-m3 returns ${CLOUDFLARE_DIMENSIONS} dimensions; received dimensions ${dimensions}`
+      );
+    }
+
+    return CLOUDFLARE_DIMENSIONS;
   }
 
   return getPositiveInteger(dimensions ?? DEFAULT_DIMENSIONS, 'dimensions');
@@ -591,6 +632,83 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderClient {
   }
 }
 
+class CloudflareEmbeddingProvider implements EmbeddingProviderClient {
+  readonly metadata: EmbeddingProviderMetadata;
+  readonly #accountId: string;
+  readonly #apiToken: string;
+  readonly #timeoutMs: number;
+
+  constructor(metadata: EmbeddingProviderMetadata, accountId: string, apiToken: string, timeoutMs: number) {
+    this.metadata = metadata;
+    this.#accountId = accountId;
+    this.#apiToken = apiToken;
+    this.#timeoutMs = timeoutMs;
+  }
+
+  async embed(texts: string[], options: EmbeddingRequestOptions = {}): Promise<EmbeddingBatchResult> {
+    const intent = resolveIntent(options.intent);
+    if (texts.length === 0) {
+      return createEmbeddingBatchResult(this.metadata, intent, []);
+    }
+
+    assertBatchSize(this.metadata, texts.length);
+    const endpoint = createCloudflareEmbeddingsUrl(this.#accountId);
+    const items = await withTimeout(
+      'cloudflare',
+      'API request',
+      this.#timeoutMs,
+      async (signal) => {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.#apiToken}`
+          },
+          signal,
+          body: JSON.stringify({
+            model: this.metadata.model,
+            input: texts
+          })
+        });
+
+        if (!response.ok) {
+          const cfRay = getSafeResponseHeader(response, 'cf-ray');
+          const context = cfRay ? ` status ${response.status}, cf-ray ${cfRay}` : ` status ${response.status}`;
+          throw new Error(context);
+        }
+
+        const data = await response.json() as OpenAIEmbeddingResponse;
+        if (!Array.isArray(data.data)) {
+          throw new Error('Cloudflare response did not include a data array');
+        }
+
+        return data.data.map((item: unknown): EmbeddingBatchItem => {
+          const typed = item as OpenAIEmbeddingItem;
+          const embedding = typed.embedding;
+          if (!Array.isArray(embedding)) {
+            throw new Error('Cloudflare response item did not include an embedding array');
+          }
+
+          const parsed: EmbeddingBatchItemResult = { embedding };
+          if (hasOwnProperty(typed, 'index')) {
+            parsed.index = typed.index;
+          }
+
+          return parsed;
+        });
+      },
+      options.signal,
+      [this.#apiToken, this.#accountId, encodeURIComponent(this.#accountId)]
+    );
+
+    return createEmbeddingBatchResult(
+      this.metadata,
+      intent,
+      validateEmbeddingBatch(items, texts.length, this.metadata.dimensions, 'cloudflare')
+    );
+  }
+}
+
 export function createEmbeddingProvider(options: EmbeddingOptions = {}): EmbeddingProviderClient {
   const provider = resolveProviderName(options.provider);
   const metadata = getEmbeddingProviderMetadata(options);
@@ -614,6 +732,24 @@ export function createEmbeddingProvider(options: EmbeddingOptions = {}): Embeddi
       }
 
       return new OpenAIEmbeddingProvider(metadata, key, timeoutMs);
+    }
+    case 'cloudflare': {
+      const accountId = getOptionalTrimmedCredential(
+        options.accountId ?? getEnvironmentVariable('CLOUDFLARE_ACCOUNT_ID')
+      );
+      const apiToken = getOptionalTrimmedCredential(
+        options.apiToken ?? getEnvironmentVariable('CLOUDFLARE_API_TOKEN')
+      );
+
+      if (!accountId) {
+        throw new Error('CLOUDFLARE_ACCOUNT_ID is required for Cloudflare embeddings');
+      }
+
+      if (!apiToken) {
+        throw new Error('CLOUDFLARE_API_TOKEN is required for Cloudflare embeddings');
+      }
+
+      return new CloudflareEmbeddingProvider(metadata, accountId, apiToken, timeoutMs);
     }
   }
 }

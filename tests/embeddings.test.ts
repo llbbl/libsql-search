@@ -45,10 +45,16 @@ vi.mock('@google/generative-ai', () => ({
 
 describe('embeddings', () => {
   let originalOpenAIKey: string | undefined;
+  let originalCloudflareAccountId: string | undefined;
+  let originalCloudflareApiToken: string | undefined;
 
   beforeEach(() => {
     originalOpenAIKey = process.env.OPENAI_API_KEY;
+    originalCloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+    originalCloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    delete process.env.CLOUDFLARE_API_TOKEN;
     geminiMock.keys = [];
     geminiMock.modelRequests = [];
     geminiMock.requestOptions = [];
@@ -62,6 +68,16 @@ describe('embeddings', () => {
       delete process.env.OPENAI_API_KEY;
     } else {
       process.env.OPENAI_API_KEY = originalOpenAIKey;
+    }
+    if (originalCloudflareAccountId === undefined) {
+      delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    } else {
+      process.env.CLOUDFLARE_ACCOUNT_ID = originalCloudflareAccountId;
+    }
+    if (originalCloudflareApiToken === undefined) {
+      delete process.env.CLOUDFLARE_API_TOKEN;
+    } else {
+      process.env.CLOUDFLARE_API_TOKEN = originalCloudflareApiToken;
     }
   });
 
@@ -170,6 +186,27 @@ describe('embeddings', () => {
       ).rejects.toThrow('OPENAI_API_KEY is required');
     });
 
+    it('should throw error for Cloudflare without credentials', async () => {
+      await expect(
+        generateEmbedding('test', { provider: 'cloudflare' })
+      ).rejects.toThrow('CLOUDFLARE_ACCOUNT_ID is required');
+
+      await expect(
+        generateEmbedding('test', {
+          provider: 'cloudflare',
+          accountId: '   '
+        })
+      ).rejects.toThrow('CLOUDFLARE_ACCOUNT_ID is required');
+
+      await expect(
+        generateEmbedding('test', {
+          provider: 'cloudflare',
+          accountId: 'account-id',
+          apiToken: '   '
+        })
+      ).rejects.toThrow('CLOUDFLARE_API_TOKEN is required');
+    });
+
     it('should use Deno env fallback for OpenAI API key', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
@@ -216,6 +253,43 @@ describe('embeddings', () => {
       ).rejects.toThrow('OPENAI_API_KEY is required');
       expect(fetchMock).not.toHaveBeenCalled();
     });
+
+    it('should use Deno env fallback for Cloudflare credentials', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({
+          data: [{ index: 0, embedding: new Array(1024).fill(1) }]
+        })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+      vi.stubGlobal('Deno', {
+        env: {
+          get: vi.fn((name: string) => {
+            if (name === 'CLOUDFLARE_ACCOUNT_ID') {
+              return 'deno-account';
+            }
+
+            return name === 'CLOUDFLARE_API_TOKEN' ? 'deno-token' : undefined;
+          })
+        }
+      });
+
+      const embedding = await generateEmbedding('test', {
+        provider: 'cloudflare'
+      });
+
+      expect(embedding).toHaveLength(1024);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.cloudflare.com/client/v4/accounts/deno-account/ai/v1/embeddings',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer deno-token'
+          })
+        })
+      );
+    });
   });
 
   describe('provider contract', () => {
@@ -249,6 +323,15 @@ describe('embeddings', () => {
         batch: { mode: 'native', maxSize: 2048 }
       });
 
+      expect(getEmbeddingProviderMetadata({
+        provider: 'cloudflare'
+      })).toEqual({
+        name: 'cloudflare',
+        model: '@cf/baai/bge-m3',
+        dimensions: 1024,
+        batch: { mode: 'native' }
+      });
+
       expect(geminiMock.keys).toEqual([]);
     });
 
@@ -258,6 +341,10 @@ describe('embeddings', () => {
 
       await expect(generateEmbeddings([], {
         provider: 'openai'
+      })).resolves.toEqual([]);
+
+      await expect(generateEmbeddings([], {
+        provider: 'cloudflare'
       })).resolves.toEqual([]);
 
       expect(fetchMock).not.toHaveBeenCalled();
@@ -346,6 +433,131 @@ describe('embeddings', () => {
       });
     });
 
+    it('uses Cloudflare bge-m3 native batches and preserves provider order by index', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({
+          data: [
+            { index: 1, embedding: new Array(1024).fill(2) },
+            { index: 0, embedding: new Array(1024).fill(1) }
+          ]
+        })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      const embeddings = await generateEmbeddings(['first', 'second'], {
+        provider: 'cloudflare',
+        accountId: 'account/with/slash',
+        apiToken: 'cloudflare-token'
+      });
+
+      expect(embeddings).toHaveLength(2);
+      expect(embeddings[0]).toEqual(new Array(1024).fill(1));
+      expect(embeddings[1]).toEqual(new Array(1024).fill(2));
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.cloudflare.com/client/v4/accounts/account%2Fwith%2Fslash/ai/v1/embeddings',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer cloudflare-token'
+          })
+        })
+      );
+
+      const request = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(JSON.parse(request.body as string)).toEqual({
+        model: '@cf/baai/bge-m3',
+        input: ['first', 'second']
+      });
+    });
+
+    it('rejects invalid Cloudflare responses', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data: [{ index: 0, embedding: 'not-an-array' }] })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbedding('test', {
+        provider: 'cloudflare',
+        accountId: 'account-id',
+        apiToken: 'cloudflare-token'
+      })).rejects.toThrow(
+        'cloudflare embedding error: API request failed: Cloudflare response item did not include an embedding array'
+      );
+    });
+
+    it.each([
+      {
+        name: 'cardinality mismatch',
+        data: [{ index: 0, embedding: new Array(1024).fill(1) }],
+        expected: /expected 2 embedding result\(s\), received 1/
+      },
+      {
+        name: 'vector dimension mismatch',
+        data: [
+          { index: 0, embedding: new Array(1024).fill(1) },
+          { index: 1, embedding: new Array(1023).fill(2) }
+        ],
+        expected: /embedding 1 has 1023 dimensions, expected 1024/
+      },
+      {
+        name: 'non-finite values',
+        data: [
+          { index: 0, embedding: new Array(1024).fill(1) },
+          { index: 1, embedding: [Number.NaN, ...new Array(1023).fill(2)] }
+        ],
+        expected: /embedding 1 contains a non-finite value at dimension 0/
+      }
+    ])('rejects Cloudflare provider $name without leaking credentials', async ({ data, expected }) => {
+      const accountId = 'secret-cloudflare-account';
+      const apiToken = 'secret-cloudflare-token';
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      let message = '';
+      try {
+        await generateEmbeddings(['first', 'second'], {
+          provider: 'cloudflare',
+          accountId,
+          apiToken
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toMatch(expected);
+      expect(message).not.toContain(accountId);
+      expect(message).not.toContain(apiToken);
+    });
+
+    it('rejects Cloudflare dimension overrides before credentials or network work', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      expect(() => getEmbeddingProviderMetadata({
+        provider: 'cloudflare',
+        dimensions: 768
+      })).toThrow('@cf/baai/bge-m3 returns 1024 dimensions; received dimensions 768');
+
+      await expect(generateEmbedding('test', {
+        provider: 'cloudflare',
+        dimensions: 768
+      })).rejects.toThrow('@cf/baai/bge-m3 returns 1024 dimensions; received dimensions 768');
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
     it('rejects malformed OpenAI response indices before treating results as positional', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
@@ -367,7 +579,7 @@ describe('embeddings', () => {
       })).rejects.toThrow('openai embedding error: provider returned invalid embedding index 0');
     });
 
-    it('enforces declared native batch limits before network work', async () => {
+    it('enforces OpenAI declared native batch limits before network work', async () => {
       const fetchMock = vi.fn();
       vi.stubGlobal('fetch', fetchMock);
 
@@ -458,6 +670,31 @@ describe('embeddings', () => {
       })).rejects.not.toThrow(/super-secret-key|should-not-appear|api_key=secret/);
     });
 
+    it('redacts Cloudflare rate-limit failures and does not read raw response bodies', async () => {
+      const responseText = vi.fn(async () => 'Authorization: Bearer should-not-appear token=secret');
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Headers({ 'cf-ray': 'abc123-SJC' }),
+        text: responseText
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbedding('test', {
+        provider: 'cloudflare',
+        accountId: 'secret-account-id',
+        apiToken: 'secret-api-token'
+      })).rejects.toThrow('cloudflare embedding error: API request failed: status 429, cf-ray abc123-SJC');
+
+      await expect(generateEmbedding('test', {
+        provider: 'cloudflare',
+        accountId: 'secret-account-id',
+        apiToken: 'secret-api-token'
+      })).rejects.not.toThrow(/secret-account-id|secret-api-token|should-not-appear|token=secret/);
+      expect(responseText).not.toHaveBeenCalled();
+    });
+
     it('redacts the exact OpenAI credential from transport rejections', async () => {
       const secret = 'sk-literal-openai-secret';
       const fetchMock = vi.fn().mockRejectedValue(
@@ -532,6 +769,39 @@ describe('embeddings', () => {
         dimensions: 2,
         timeoutMs: 1
       })).rejects.toThrow('openai embedding error: API request timed out after 1ms');
+    });
+
+    it('times out Cloudflare provider calls with a safe error deterministically', async () => {
+      vi.useFakeTimers();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const fetchMock = vi.fn((_url: string, _init: RequestInit) => {
+        markStarted();
+        return new Promise(() => {});
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      try {
+        const embeddingPromise = generateEmbedding('test', {
+          provider: 'cloudflare',
+          accountId: 'timeout-account',
+          apiToken: 'timeout-token',
+          timeoutMs: 1000
+        });
+
+        await started;
+        const rejection = expect(embeddingPromise).rejects.toThrow(
+          'cloudflare embedding error: API request timed out after 1000ms'
+        );
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('times out a signal-ignorant in-flight Gemini request deterministically', async () => {
@@ -641,6 +911,21 @@ describe('embeddings', () => {
       });
       expect(Object.isFrozen(provider.metadata)).toBe(true);
       expect(Object.isFrozen(provider.metadata.batch)).toBe(true);
+
+      const cloudflareProvider = createEmbeddingProvider({
+        provider: 'cloudflare',
+        accountId: 'metadata-account',
+        apiToken: 'metadata-token'
+      });
+
+      expect(cloudflareProvider.metadata).toEqual({
+        name: 'cloudflare',
+        model: '@cf/baai/bge-m3',
+        dimensions: 1024,
+        batch: { mode: 'native' }
+      });
+      expect(Object.isFrozen(cloudflareProvider.metadata)).toBe(true);
+      expect(Object.isFrozen(cloudflareProvider.metadata.batch)).toBe(true);
     });
   });
 });

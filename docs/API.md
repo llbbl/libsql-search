@@ -210,8 +210,8 @@ Provider metadata includes:
 - `batch.maxSize`, when the provider has a hard maximum
 
 Hosted provider clients are scoped to their options. The library does not reuse
-a Cloudflare, Gemini, or OpenAI client created with different credentials or
-configuration.
+a Cloudflare, Mistral, Gemini, or OpenAI client created with different
+credentials or configuration.
 
 ### `getEmbeddingProviderMetadata(options?)`
 
@@ -239,7 +239,7 @@ Provider clients return:
 ```ts
 interface EmbeddingBatchResult {
   embeddings: number[][];
-  provider: "local" | "cloudflare" | "gemini" | "openai";
+  provider: "local" | "cloudflare" | "mistral" | "gemini" | "openai";
   model: string;
   dimensions: number;
   intent: "document" | "query";
@@ -255,7 +255,7 @@ cardinality, dimensions, finite numeric values, and indexed batch ordering.
 
 ```ts
 interface EmbeddingOptions {
-  provider?: "local" | "cloudflare" | "gemini" | "openai";
+  provider?: "local" | "cloudflare" | "mistral" | "gemini" | "openai";
   apiKey?: string;
   accountId?: string;
   apiToken?: string;
@@ -267,9 +267,10 @@ interface EmbeddingOptions {
 }
 ```
 
-`apiKey` is used by Gemini and OpenAI. Cloudflare uses `accountId` and
-`apiToken`, which fall back to `CLOUDFLARE_ACCOUNT_ID` and
-`CLOUDFLARE_API_TOKEN`.
+`apiKey` is used by Mistral, Gemini, and OpenAI. It falls back to
+`MISTRAL_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY` for those providers.
+Cloudflare uses `accountId` and `apiToken`, which fall back to
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
 
 ### `padEmbedding(embedding, targetDimensions)`
 

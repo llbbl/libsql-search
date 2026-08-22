@@ -21,8 +21,9 @@ Use it when you want:
 - Markdown indexing from local directories with frontmatter via `gray-matter`
 - libSQL/Turso storage and vector search
 - Embedding providers: local `Xenova/all-MiniLM-L6-v2`, Cloudflare Workers AI
-  `@cf/baai/bge-m3`, Google Gemini `text-embedding-004`, and OpenAI
-  `text-embedding-3-small` / `text-embedding-3-large`
+  `@cf/baai/bge-m3`, Mistral `mistral-embed`, Google Gemini
+  `text-embedding-004`, and OpenAI `text-embedding-3-small` /
+  `text-embedding-3-large`
 - npm distribution plus JSR publishing
 
 ## Install
@@ -98,7 +99,7 @@ Important behavior:
 - Keep dimensions aligned across table creation, indexing, and search queries.
 - `indexContent()` clears existing rows before rebuilding the index.
 - `local` is the default offline provider; Cloudflare is the recommended hosted
-  option and uses 1024 dimensions.
+  option. Cloudflare and Mistral use 1024 dimensions.
 
 ## Core API
 

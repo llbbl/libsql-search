@@ -52,6 +52,27 @@ checks that the tag target is on `origin/main`, that the tag and manifests agree
 and that the remote tag still resolves to the checked-out commit immediately
 before each registry publish.
 
+## Recovery dispatch
+
+Use the guarded workflow dispatch path when an existing `vX.Y.Z` tag needs a
+registry or GitHub Release recovery without creating a new version. Example:
+
+```bash
+gh workflow run publish.yml --ref main -f release_tag=v0.1.4
+```
+
+Dispatch validates that `release_tag` is strict `vX.Y.Z`, fetches the remote tag,
+peels it to a commit, checks that commit is on `origin/main`, checks manifests
+against the tag, and then publishes from the tag target SHA. Unlike a tag-push
+run, dispatch does not require the tag target to equal the workflow dispatch
+SHA; this allows a newer `main` workflow fix to recover an older release tag.
+
+npm and GitHub Release recovery steps remain idempotent and skip when the
+version or release already exists. JSR recovery always invokes
+`pnpm dlx jsr@0.14.3 publish`; do not use `deno info jsr:...` as an existence
+gate, because it can resolve successfully even when the public JSR package
+version metadata is not actually published.
+
 ## GitHub and registry settings
 
 - npm trusted publishing must point at workflow filename `publish.yml` and use

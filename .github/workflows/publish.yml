@@ -6,6 +6,12 @@ on:
       - main
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag to recover, for example v0.1.4'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,13 +25,13 @@ jobs:
     name: Plan Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
-      should_release: ${{ steps.auto-plan.outputs.should_release || steps.manual-tag.outputs.should_release }}
-      version: ${{ steps.auto-plan.outputs.version || steps.manual-tag.outputs.version }}
-      tag: ${{ steps.auto-plan.outputs.tag || steps.manual-tag.outputs.tag }}
-      release_sha: ${{ steps.manual-tag.outputs.release_sha || github.sha }}
+      should_release: ${{ steps.auto-plan.outputs.should_release || steps.tag-release.outputs.should_release }}
+      version: ${{ steps.auto-plan.outputs.version || steps.tag-release.outputs.version }}
+      tag: ${{ steps.auto-plan.outputs.tag || steps.tag-release.outputs.tag }}
+      release_sha: ${{ steps.tag-release.outputs.release_sha || github.sha }}
 
     steps:
       - name: Checkout code
@@ -43,10 +49,13 @@ jobs:
       - name: Determine release mode
         id: mode
         env:
+          EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
         run: |
           if [ "${REF_TYPE}" = "tag" ]; then
             echo "mode=manual" >> "$GITHUB_OUTPUT"
+          elif [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "mode=dispatch" >> "$GITHUB_OUTPUT"
           else
             echo "mode=auto" >> "$GITHUB_OUTPUT"
           fi
@@ -56,18 +65,32 @@ jobs:
         if: steps.mode.outputs.mode == 'auto'
         run: node ./scripts/plan-release.mjs --github-output
 
-      - name: Validate manual tag release
-        id: manual-tag
-        if: steps.mode.outputs.mode == 'manual'
+      - name: Validate selected tag release
+        id: tag-release
+        if: steps.mode.outputs.mode == 'manual' || steps.mode.outputs.mode == 'dispatch'
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          REQUESTED_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
         run: |
-          git fetch --no-tags origin "main:refs/remotes/origin/main"
-          git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          if [ "${MODE}" = "manual" ]; then
+            release_tag="${GITHUB_REF_NAME}"
+          else
+            release_tag="${REQUESTED_RELEASE_TAG}"
+          fi
 
-          tag_target=$(git rev-parse "${GITHUB_REF_NAME}^{commit}")
+          if ! echo "${release_tag}" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "Release tag ${release_tag} must match vX.Y.Z with SemVer numeric identifiers."
+            exit 1
+          fi
+
+          git fetch --no-tags origin "main:refs/remotes/origin/main"
+          git fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+
+          tag_target=$(git rev-parse "${release_tag}^{commit}")
           event_target=$(git rev-parse "${GITHUB_SHA}^{commit}")
 
-          if [ "${tag_target}" != "${event_target}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} resolves to ${tag_target}, not event commit ${event_target}; aborting."
+          if [ "${MODE}" = "manual" ] && [ "${tag_target}" != "${event_target}" ]; then
+            echo "Tag ${release_tag} resolves to ${tag_target}, not event commit ${event_target}; aborting."
             exit 1
           fi
 
@@ -76,33 +99,34 @@ jobs:
             exit 1
           fi
 
-          version=$(node ./scripts/validate-release-version.mjs "${GITHUB_REF_NAME}")
+          git switch --detach "${tag_target}"
+          version=$(node ./scripts/validate-release-version.mjs "${release_tag}")
           {
             echo "should_release=true"
             echo "version=${version}"
-            echo "tag=${GITHUB_REF_NAME}"
+            echo "tag=${release_tag}"
             echo "release_sha=${tag_target}"
           } >> "$GITHUB_OUTPUT"
-          echo "Validated manual release ${GITHUB_REF_NAME} at ${tag_target}."
+          echo "Validated ${MODE} release ${release_tag} at ${tag_target}."
 
-      - name: Setup pnpm for manual tag validation
-        if: steps.mode.outputs.mode == 'manual'
+      - name: Setup pnpm for selected tag validation
+        if: steps.mode.outputs.mode == 'manual' || steps.mode.outputs.mode == 'dispatch'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 10.34.5
 
-      - name: Setup Deno for manual tag validation
-        if: steps.mode.outputs.mode == 'manual'
+      - name: Setup Deno for selected tag validation
+        if: steps.mode.outputs.mode == 'manual' || steps.mode.outputs.mode == 'dispatch'
         uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
           deno-version: v2.x
 
-      - name: Install dependencies for manual tag validation
-        if: steps.mode.outputs.mode == 'manual'
+      - name: Install dependencies for selected tag validation
+        if: steps.mode.outputs.mode == 'manual' || steps.mode.outputs.mode == 'dispatch'
         run: pnpm install --frozen-lockfile
 
-      - name: Run manual tag release validation
-        if: steps.mode.outputs.mode == 'manual'
+      - name: Run selected tag release validation
+        if: steps.mode.outputs.mode == 'manual' || steps.mode.outputs.mode == 'dispatch'
         run: pnpm validate:release
 
   prepare-release:
@@ -236,7 +260,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm
-    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'manual' || needs.prepare-release.outputs.should_publish == 'true')
+    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'manual' || needs.plan.outputs.mode == 'dispatch' || needs.prepare-release.outputs.should_publish == 'true')
     permissions:
       contents: read
       id-token: write
@@ -304,7 +328,7 @@ jobs:
       - prepare-release
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'manual' || needs.prepare-release.outputs.should_publish == 'true')
+    if: always() && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'manual' || needs.plan.outputs.mode == 'dispatch' || needs.prepare-release.outputs.should_publish == 'true')
     permissions:
       contents: read
       id-token: write
@@ -341,11 +365,6 @@ jobs:
 
       - name: Publish to JSR
         run: |
-          if deno info "jsr:@logan/libsql-search@${VERSION}" >/dev/null 2>&1; then
-            echo "@logan/libsql-search@${VERSION} is already published on JSR; skipping OIDC publish."
-            exit 0
-          fi
-
           node ./scripts/validate-release-version.mjs "${RELEASE_TAG}"
           git fetch --force --no-tags origin "main:refs/remotes/origin/main"
           git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"

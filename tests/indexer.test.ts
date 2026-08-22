@@ -20,19 +20,20 @@ describe('indexer', () => {
 
   describe('createTable', () => {
     it('should create articles table with correct schema', async () => {
-      await createTable(client, 'articles', 768);
+      await createTable(client);
 
       const result = await client.execute(`
-        SELECT name FROM sqlite_master
+        SELECT name, sql FROM sqlite_master
         WHERE type='table' AND name='articles'
       `);
 
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0].name).toBe('articles');
+      expect(result.rows[0].sql).toContain('embedding F32_BLOB(384)');
     });
 
     it('should create indexes', async () => {
-      await createTable(client, 'articles', 768);
+      await createTable(client, 'articles', 384);
 
       const result = await client.execute(`
         SELECT name FROM sqlite_master
@@ -71,7 +72,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(result.success).toBe(1);
@@ -93,7 +94,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(result.success).toBe(1);
@@ -111,7 +112,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       const articles = await client.execute('SELECT * FROM articles');
@@ -127,7 +128,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       const articles = await client.execute('SELECT * FROM articles');
@@ -141,7 +142,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(result.success).toBe(1);
@@ -156,7 +157,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       await rm(join(testDir, 'first.md'));
@@ -165,7 +166,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       const articles = await client.execute('SELECT * FROM articles');
@@ -183,7 +184,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(result.total).toBe(0);
@@ -197,7 +198,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 },
+        embeddingOptions: { provider: 'local', dimensions: 384 },
         onProgress: (current, total, file) => {
           progressCalls.push({ current, total, file });
         }
@@ -215,7 +216,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(result.success).toBe(0);

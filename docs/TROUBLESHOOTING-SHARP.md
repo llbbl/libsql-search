@@ -1,11 +1,12 @@
 # Troubleshooting: Transitive `sharp` Install Errors
 
-`libsql-search` does not directly depend on `sharp`. If you see an install error
-mentioning `sharp`, it is coming from another dependency in your application or
-toolchain.
+`libsql-search` does not directly import `sharp`, but local embeddings use
+`@huggingface/transformers`, which currently brings in `sharp` as a transitive
+runtime dependency. If you see an install error mentioning `sharp`, it is
+usually a native-package install or approval issue.
 
-This page exists because the error can show up in environments that also use
-`libsql-search`, and it is easy to misattribute the failure to this package.
+This page exists because the error can show up before your application reaches
+any `libsql-search` code.
 
 ## Typical Error
 
@@ -48,7 +49,7 @@ in `pnpm-workspace.yaml` with `onlyBuiltDependencies`.
 
 ## Relation To `libsql-search`
 
-- local embeddings use `@xenova/transformers`
+- local embeddings use `@huggingface/transformers`
 - the first local embedding run may download a model at runtime
 - that runtime model download is separate from a pnpm native-module install
   failure

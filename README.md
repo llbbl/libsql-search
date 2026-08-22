@@ -20,8 +20,8 @@ Use it when you want:
 
 - Markdown indexing from local directories with frontmatter via `gray-matter`
 - libSQL/Turso storage and vector search
-- Embedding providers: local `Xenova/all-MiniLM-L6-v2`, Cloudflare Workers AI
-  `@cf/baai/bge-m3`, Mistral `mistral-embed`, Google Gemini
+- Embedding providers: local Hugging Face `Xenova/all-MiniLM-L6-v2`,
+  Cloudflare Workers AI `@cf/baai/bge-m3`, Mistral `mistral-embed`, Google Gemini
   `gemini-embedding-2`, and OpenAI `text-embedding-3-small` /
   `text-embedding-3-large`
 - npm distribution plus JSR publishing
@@ -65,14 +65,13 @@ const client = createClient({
   authToken: "your-auth-token",
 });
 
-await createTable(client, "articles", 768);
+await createTable(client);
 
 await indexContent({
   client,
   contentPath: "./content",
   embeddingOptions: {
     provider: "local",
-    dimensions: 768,
   },
 });
 
@@ -82,7 +81,6 @@ const results = await search({
   limit: 5,
   embeddingOptions: {
     provider: "local",
-    dimensions: 768,
   },
 });
 
@@ -98,9 +96,9 @@ Important behavior:
 - Call `createTable()` before indexing or searching.
 - Keep dimensions aligned across table creation, indexing, and search queries.
 - `indexContent()` clears existing rows before rebuilding the index.
-- `local` is the default offline provider; Cloudflare is the recommended hosted
-  option. Cloudflare and Mistral use 1024 dimensions. Gemini defaults to 3072
-  dimensions and supports 128-3072.
+- `local` is the default offline provider and uses 384 dimensions. Cloudflare is
+  the recommended hosted option. Cloudflare and Mistral use 1024 dimensions.
+  Gemini defaults to 3072 dimensions and supports 128-3072.
 
 ## Core API
 

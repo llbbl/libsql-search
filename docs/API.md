@@ -42,13 +42,13 @@ It also exports these types:
 Creates the table and supporting indexes used by search.
 
 ```ts
-await createTable(client, "articles", 768);
+await createTable(client);
 ```
 
 Defaults:
 
 - `tableName`: `"articles"`
-- `dimensions`: `768`
+- `dimensions`: `384`
 
 `tableName` must be an ASCII SQLite identifier matching
 `[A-Za-z_][A-Za-z0-9_]*`. Valid identifiers are quoted internally, so reserved
@@ -216,6 +216,10 @@ credentials or configuration.
 Gemini uses `gemini-embedding-2`. Its default is 3072 dimensions, and explicit
 Gemini dimensions must be an integer from 128 through 3072.
 
+Local embeddings use `Xenova/all-MiniLM-L6-v2` through
+`@huggingface/transformers` and are fixed at the model's native 384 dimensions.
+Passing any other local dimension is rejected before the runtime is loaded.
+
 ### `getEmbeddingProviderMetadata(options?)`
 
 Returns the same metadata exposed by `createEmbeddingProvider(options).metadata`
@@ -278,6 +282,9 @@ Cloudflare uses `accountId` and `apiToken`, which fall back to
 ### `padEmbedding(embedding, targetDimensions)`
 
 Pads or truncates an embedding array to the requested length.
+
+This helper remains exported for callers that used it directly. The local
+provider does not use it; local vectors are validated at native 384 dimensions.
 
 ### `prepareTextForEmbedding(fields)`
 

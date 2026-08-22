@@ -2,9 +2,12 @@ import dts from 'rollup-plugin-dts';
 
 const external = [
   '@libsql/client',
-  '@xenova/transformers',
+  '@huggingface/transformers',
   'gray-matter',
   '@google/genai',
+  'onnxruntime-node',
+  'onnxruntime-web',
+  'sharp',
   'fs',
   'path',
   'fs/promises',

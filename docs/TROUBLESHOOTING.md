@@ -15,3 +15,5 @@ Common operational checks:
 - after upgrading an existing Gemini index, fully re-embed with
   `gemini-embedding-2`; for 3072-dimensional Gemini indexes, recreate the table
   or use a new table name before rebuilding
+- after upgrading an existing local 768-dimensional padded index, create or
+  recreate a 384-dimensional table and fully re-index before querying it

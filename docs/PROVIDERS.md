@@ -1,9 +1,10 @@
 # Embedding Providers
 
-`libsql-search` currently supports four embedding providers:
+`libsql-search` currently supports five embedding providers:
 
 - `local`
 - `cloudflare`
+- `mistral`
 - `gemini`
 - `openai`
 
@@ -15,7 +16,7 @@ query time.
 
 ```ts
 interface EmbeddingOptions {
-  provider?: "local" | "cloudflare" | "gemini" | "openai";
+  provider?: "local" | "cloudflare" | "mistral" | "gemini" | "openai";
   apiKey?: string;
   accountId?: string;
   apiToken?: string;
@@ -33,8 +34,8 @@ interface EmbeddingOptions {
 - `intent` can be `"document"` or `"query"`; indexing defaults to
   `"document"` and search defaults to `"query"` unless explicitly set
 - `timeoutMs` defaults to `30000`
-- `apiKey` is used by Gemini and OpenAI and falls back to `GEMINI_API_KEY` or
-  `OPENAI_API_KEY`
+- `apiKey` is used by Mistral, Gemini, and OpenAI and falls back to
+  `MISTRAL_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY`
 - `accountId` and `apiToken` are used by Cloudflare and fall back to
   `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
 
@@ -44,7 +45,7 @@ Each provider exposes immutable metadata:
 
 ```ts
 interface EmbeddingProviderMetadata {
-  name: "local" | "cloudflare" | "gemini" | "openai";
+  name: "local" | "cloudflare" | "mistral" | "gemini" | "openai";
   model: string;
   dimensions: number;
   batch: {
@@ -83,9 +84,9 @@ Lower-level provider clients return an `EmbeddingBatchResult` with the validated
 vectors plus provider, model, dimensions, and intent. The compatibility helpers
 `generateEmbedding()` and `generateEmbeddings()` return only arrays.
 
-Cloudflare, Gemini, and OpenAI clients are scoped to their current options. They
-are not cached globally across different credentials or configurations. The
-local Xenova model can be cached by model name.
+Cloudflare, Mistral, Gemini, and OpenAI clients are scoped to their current
+options. They are not cached globally across different credentials or
+configurations. The local Xenova model can be cached by model name.
 
 Hosted provider failures are reported with bounded provider/status/request-id
 context and without raw upstream bodies, credentials, Authorization headers, or
@@ -144,6 +145,33 @@ Behavior:
 - Cloudflare does not accept custom dimensions in this provider; use
   `createTable(client, "articles", 1024)` for Cloudflare-backed indexes
 
+## Mistral
+
+Provider value: `mistral`
+
+Mistral uses the hosted `mistral-embed` model through
+`https://api.mistral.ai/v1/embeddings`.
+
+```ts
+embeddingOptions: {
+  provider: "mistral",
+  apiKey: process.env.MISTRAL_API_KEY,
+}
+```
+
+Behavior:
+
+- if `apiKey` is omitted, the library reads `MISTRAL_API_KEY`
+- blank Mistral credentials are treated as missing
+- `mistral-embed` returns 1024 dimensions
+- metadata reports `mistral-embed` and 1024 dimensions without requiring
+  credentials
+- batch metadata is `{ mode: "native" }`
+- request bodies send `encoding_format: "float"`
+- response items are reordered by provider-supplied index before being returned
+- Mistral does not accept custom dimensions in this provider; use
+  `createTable(client, "articles", 1024)` for Mistral-backed indexes
+
 ## Gemini
 
 Provider value: `gemini`
@@ -193,6 +221,7 @@ Behavior:
 
 - `local` defaults to `768`
 - `cloudflare` is fixed at `1024`
+- `mistral` is fixed at `1024`
 - local embeddings are padded from 384 to your target size
 - Gemini stays at 768
 - OpenAI can be used at 1536 or 3072, or another supported OpenAI dimension

@@ -45,14 +45,17 @@ vi.mock('@google/generative-ai', () => ({
 
 describe('embeddings', () => {
   let originalOpenAIKey: string | undefined;
+  let originalMistralKey: string | undefined;
   let originalCloudflareAccountId: string | undefined;
   let originalCloudflareApiToken: string | undefined;
 
   beforeEach(() => {
     originalOpenAIKey = process.env.OPENAI_API_KEY;
+    originalMistralKey = process.env.MISTRAL_API_KEY;
     originalCloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
     originalCloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.MISTRAL_API_KEY;
     delete process.env.CLOUDFLARE_ACCOUNT_ID;
     delete process.env.CLOUDFLARE_API_TOKEN;
     geminiMock.keys = [];
@@ -68,6 +71,11 @@ describe('embeddings', () => {
       delete process.env.OPENAI_API_KEY;
     } else {
       process.env.OPENAI_API_KEY = originalOpenAIKey;
+    }
+    if (originalMistralKey === undefined) {
+      delete process.env.MISTRAL_API_KEY;
+    } else {
+      process.env.MISTRAL_API_KEY = originalMistralKey;
     }
     if (originalCloudflareAccountId === undefined) {
       delete process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -186,6 +194,19 @@ describe('embeddings', () => {
       ).rejects.toThrow('OPENAI_API_KEY is required');
     });
 
+    it('should throw error for Mistral without API key', async () => {
+      await expect(
+        generateEmbedding('test', { provider: 'mistral' })
+      ).rejects.toThrow('MISTRAL_API_KEY is required');
+
+      await expect(
+        generateEmbedding('test', {
+          provider: 'mistral',
+          apiKey: '   '
+        })
+      ).rejects.toThrow('MISTRAL_API_KEY is required');
+    });
+
     it('should throw error for Cloudflare without credentials', async () => {
       await expect(
         generateEmbedding('test', { provider: 'cloudflare' })
@@ -252,6 +273,60 @@ describe('embeddings', () => {
         generateEmbedding('test', { provider: 'openai' })
       ).rejects.toThrow('OPENAI_API_KEY is required');
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('should use Node env fallback for Mistral API key after trimming it', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data: [{ index: 0, embedding: new Array(1024).fill(1) }] })
+      });
+
+      process.env.MISTRAL_API_KEY = '  node-mistral-key  ';
+      vi.stubGlobal('fetch', fetchMock);
+
+      const embedding = await generateEmbedding('test', {
+        provider: 'mistral'
+      });
+
+      expect(embedding).toHaveLength(1024);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.mistral.ai/v1/embeddings',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer node-mistral-key'
+          })
+        })
+      );
+    });
+
+    it('should use Deno env fallback for Mistral API key', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data: [{ index: 0, embedding: new Array(1024).fill(1) }] })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+      vi.stubGlobal('Deno', {
+        env: {
+          get: vi.fn((name: string) => name === 'MISTRAL_API_KEY' ? 'deno-mistral-key' : undefined)
+        }
+      });
+
+      const embedding = await generateEmbedding('test', {
+        provider: 'mistral'
+      });
+
+      expect(embedding).toHaveLength(1024);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.mistral.ai/v1/embeddings',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer deno-mistral-key'
+          })
+        })
+      );
     });
 
     it('should use Deno env fallback for Cloudflare credentials', async () => {
@@ -332,6 +407,15 @@ describe('embeddings', () => {
         batch: { mode: 'native' }
       });
 
+      expect(getEmbeddingProviderMetadata({
+        provider: 'mistral'
+      })).toEqual({
+        name: 'mistral',
+        model: 'mistral-embed',
+        dimensions: 1024,
+        batch: { mode: 'native' }
+      });
+
       expect(geminiMock.keys).toEqual([]);
     });
 
@@ -345,6 +429,10 @@ describe('embeddings', () => {
 
       await expect(generateEmbeddings([], {
         provider: 'cloudflare'
+      })).resolves.toEqual([]);
+
+      await expect(generateEmbeddings([], {
+        provider: 'mistral'
       })).resolves.toEqual([]);
 
       expect(fetchMock).not.toHaveBeenCalled();
@@ -472,6 +560,218 @@ describe('embeddings', () => {
         model: '@cf/baai/bge-m3',
         input: ['first', 'second']
       });
+    });
+
+    it('uses Mistral native batches with the documented request shape and preserves provider order by index', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({
+          data: [
+            { index: 1, embedding: new Array(1024).fill(2) },
+            { index: 0, embedding: new Array(1024).fill(1) }
+          ]
+        })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      const embeddings = await generateEmbeddings(['first', 'second'], {
+        provider: 'mistral',
+        apiKey: 'mistral-key'
+      });
+
+      expect(embeddings).toHaveLength(2);
+      expect(embeddings[0]).toEqual(new Array(1024).fill(1));
+      expect(embeddings[1]).toEqual(new Array(1024).fill(2));
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.mistral.ai/v1/embeddings',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer mistral-key'
+          })
+        })
+      );
+
+      const request = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(JSON.parse(request.body as string)).toEqual({
+        input: ['first', 'second'],
+        model: 'mistral-embed',
+        encoding_format: 'float'
+      });
+    });
+
+    it('rejects Mistral responses when items do not include indices', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({
+          data: [
+            { embedding: new Array(1024).fill(1) },
+            { embedding: new Array(1024).fill(2) }
+          ]
+        })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbeddings(['first', 'second'], {
+        provider: 'mistral',
+        apiKey: 'mistral-key'
+      })).rejects.toThrow(
+        'mistral embedding error: API request failed: Mistral response item did not include an index'
+      );
+    });
+
+    it('rejects malformed Mistral top-level and item responses', async () => {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          json: async () => ({ data: {} })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          json: async () => ({ data: [{ index: 0, embedding: 'not-an-array' }] })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          json: async () => ({ data: [null] })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          json: async () => ({ data: ['not-an-object'] })
+        });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbedding('test', {
+        provider: 'mistral',
+        apiKey: 'mistral-key'
+      })).rejects.toThrow(
+        'mistral embedding error: API request failed: Mistral response did not include a data array'
+      );
+
+      await expect(generateEmbedding('test', {
+        provider: 'mistral',
+        apiKey: 'mistral-key'
+      })).rejects.toThrow(
+        'mistral embedding error: API request failed: Mistral response item did not include an embedding array'
+      );
+
+      await expect(generateEmbedding('test', {
+        provider: 'mistral',
+        apiKey: 'mistral-key'
+      })).rejects.toThrow(
+        'mistral embedding error: API request failed: Mistral response item was not an object'
+      );
+
+      await expect(generateEmbedding('test', {
+        provider: 'mistral',
+        apiKey: 'mistral-key'
+      })).rejects.toThrow(
+        'mistral embedding error: API request failed: Mistral response item was not an object'
+      );
+    });
+
+    it.each([
+      {
+        name: 'cardinality mismatch',
+        data: [{ index: 0, embedding: new Array(1024).fill(1) }],
+        expected: /expected 2 embedding result\(s\), received 1/
+      },
+      {
+        name: 'duplicate index',
+        data: [
+          { index: 0, embedding: new Array(1024).fill(1) },
+          { index: 0, embedding: new Array(1024).fill(2) }
+        ],
+        expected: /duplicate embedding index 0/
+      },
+      {
+        name: 'out-of-range index',
+        data: [
+          { index: 0, embedding: new Array(1024).fill(1) },
+          { index: 2, embedding: new Array(1024).fill(2) }
+        ],
+        expected: /invalid embedding index 2/
+      },
+      {
+        name: 'partial index',
+        data: [
+          { index: 0, embedding: new Array(1024).fill(1) },
+          { embedding: new Array(1024).fill(2) }
+        ],
+        expected: /Mistral response item did not include an index/
+      },
+      {
+        name: 'vector dimension mismatch',
+        data: [
+          { index: 0, embedding: new Array(1024).fill(1) },
+          { index: 1, embedding: new Array(1023).fill(2) }
+        ],
+        expected: /embedding 1 has 1023 dimensions, expected 1024/
+      },
+      {
+        name: 'NaN value',
+        data: [
+          { index: 0, embedding: new Array(1024).fill(1) },
+          { index: 1, embedding: [Number.NaN, ...new Array(1023).fill(2)] }
+        ],
+        expected: /embedding 1 contains a non-finite value at dimension 0/
+      },
+      {
+        name: 'Infinity value',
+        data: [
+          { index: 0, embedding: new Array(1024).fill(1) },
+          { index: 1, embedding: [Number.POSITIVE_INFINITY, ...new Array(1023).fill(2)] }
+        ],
+        expected: /embedding 1 contains a non-finite value at dimension 0/
+      }
+    ])('rejects Mistral provider $name without leaking credentials', async ({ data, expected }) => {
+      const apiKey = 'secret-mistral-key';
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      let message = '';
+      try {
+        await generateEmbeddings(['first', 'second'], {
+          provider: 'mistral',
+          apiKey
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toMatch(expected);
+      expect(message).not.toContain(apiKey);
+    });
+
+    it('rejects Mistral dimension overrides before credentials or network work', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      expect(() => getEmbeddingProviderMetadata({
+        provider: 'mistral',
+        dimensions: 768
+      })).toThrow('mistral-embed returns 1024 dimensions; received dimensions 768');
+
+      await expect(generateEmbedding('test', {
+        provider: 'mistral',
+        dimensions: 768
+      })).rejects.toThrow('mistral-embed returns 1024 dimensions; received dimensions 768');
+
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('rejects invalid Cloudflare responses', async () => {
@@ -645,6 +945,30 @@ describe('embeddings', () => {
         { key: 'gemini-first', model: 'text-embedding-004' },
         { key: 'gemini-second', model: 'text-embedding-004' }
       ]);
+
+      const mistralFetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data: [{ index: 0, embedding: new Array(1024).fill(1) }] })
+      });
+
+      vi.stubGlobal('fetch', mistralFetchMock);
+
+      await generateEmbedding('mistral one', {
+        provider: 'mistral',
+        apiKey: 'mistral-first'
+      });
+      await generateEmbedding('mistral two', {
+        provider: 'mistral',
+        apiKey: 'mistral-second'
+      });
+
+      expect(mistralFetchMock.mock.calls[0][1]).toMatchObject({
+        headers: expect.objectContaining({ Authorization: 'Bearer mistral-first' })
+      });
+      expect(mistralFetchMock.mock.calls[1][1]).toMatchObject({
+        headers: expect.objectContaining({ Authorization: 'Bearer mistral-second' })
+      });
     });
 
     it('redacts hosted provider failures and keeps bounded context', async () => {
@@ -695,6 +1019,37 @@ describe('embeddings', () => {
       expect(responseText).not.toHaveBeenCalled();
     });
 
+    it('redacts Mistral authentication and rate-limit failures without reading raw response bodies', async () => {
+      const responseText = vi.fn(async () => 'Authorization: Bearer should-not-appear api_key=secret');
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          headers: new Headers({ 'x-request-id': 'req_bad-auth' }),
+          text: responseText
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          headers: new Headers({ 'x-request-id': 'req_rate-limit' }),
+          text: responseText
+        });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbedding('test', {
+        provider: 'mistral',
+        apiKey: 'secret-mistral-key'
+      })).rejects.toThrow('mistral embedding error: API request failed: status 401, request req_bad-auth');
+
+      await expect(generateEmbedding('test', {
+        provider: 'mistral',
+        apiKey: 'secret-mistral-key'
+      })).rejects.toThrow('mistral embedding error: API request failed: status 429, request req_rate-limit');
+
+      expect(responseText).not.toHaveBeenCalled();
+    });
+
     it('redacts the exact OpenAI credential from transport rejections', async () => {
       const secret = 'sk-literal-openai-secret';
       const fetchMock = vi.fn().mockRejectedValue(
@@ -715,6 +1070,30 @@ describe('embeddings', () => {
       }
 
       expect(message).toContain('openai embedding error: API request failed');
+      expect(message).toContain('transport failed');
+      expect(message).toContain('[redacted]');
+      expect(message).not.toContain(secret);
+    });
+
+    it('redacts the exact Mistral credential from transport rejections', async () => {
+      const secret = 'literal-mistral-secret';
+      const fetchMock = vi.fn().mockRejectedValue(
+        new Error(`transport failed for credential ${secret}`)
+      );
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      let message = '';
+      try {
+        await generateEmbedding('test', {
+          provider: 'mistral',
+          apiKey: secret
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('mistral embedding error: API request failed');
       expect(message).toContain('transport failed');
       expect(message).toContain('[redacted]');
       expect(message).not.toContain(secret);
@@ -802,6 +1181,73 @@ describe('embeddings', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('times out Mistral provider calls with a safe error deterministically', async () => {
+      vi.useFakeTimers();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const fetchMock = vi.fn((_url: string, _init: RequestInit) => {
+        markStarted();
+        return new Promise(() => {});
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      try {
+        const embeddingPromise = generateEmbedding('test', {
+          provider: 'mistral',
+          apiKey: 'timeout-key',
+          timeoutMs: 1000
+        });
+
+        await started;
+        const rejection = expect(embeddingPromise).rejects.toThrow(
+          'mistral embedding error: API request timed out after 1000ms'
+        );
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('passes caller abort to Mistral requests', async () => {
+      const controller = new AbortController();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+        markStarted();
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        });
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      const embeddingPromise = generateEmbedding('test', {
+        provider: 'mistral',
+        apiKey: 'abort-key',
+        signal: controller.signal
+      });
+
+      await started;
+      controller.abort();
+
+      await expect(embeddingPromise).rejects.toThrow('mistral embedding error: API request was aborted');
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.mistral.ai/v1/embeddings',
+        expect.objectContaining({
+          signal: expect.any(AbortSignal)
+        })
+      );
     });
 
     it('times out a signal-ignorant in-flight Gemini request deterministically', async () => {
@@ -926,6 +1372,20 @@ describe('embeddings', () => {
       });
       expect(Object.isFrozen(cloudflareProvider.metadata)).toBe(true);
       expect(Object.isFrozen(cloudflareProvider.metadata.batch)).toBe(true);
+
+      const mistralProvider = createEmbeddingProvider({
+        provider: 'mistral',
+        apiKey: 'metadata-key'
+      });
+
+      expect(mistralProvider.metadata).toEqual({
+        name: 'mistral',
+        model: 'mistral-embed',
+        dimensions: 1024,
+        batch: { mode: 'native' }
+      });
+      expect(Object.isFrozen(mistralProvider.metadata)).toBe(true);
+      expect(Object.isFrozen(mistralProvider.metadata.batch)).toBe(true);
     });
   });
 });

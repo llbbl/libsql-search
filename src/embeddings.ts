@@ -1,10 +1,10 @@
 /**
  * Multi-provider embedding generation
- * Supports local (Xenova), Gemini, OpenAI, and Cloudflare Workers AI
+ * Supports local (Xenova), Gemini, OpenAI, Mistral, and Cloudflare Workers AI
  */
 import type { FeatureExtractionPipeline } from '@xenova/transformers';
 
-export type EmbeddingProvider = 'local' | 'gemini' | 'openai' | 'cloudflare';
+export type EmbeddingProvider = 'local' | 'gemini' | 'openai' | 'mistral' | 'cloudflare';
 export type EmbeddingIntent = 'document' | 'query';
 export type EmbeddingBatchMode = 'native' | 'sequential';
 
@@ -89,6 +89,9 @@ const GEMINI_MODEL = 'text-embedding-004';
 const OPENAI_SMALL_MODEL = 'text-embedding-3-small';
 const OPENAI_LARGE_MODEL = 'text-embedding-3-large';
 const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
+const MISTRAL_MODEL = 'mistral-embed';
+const MISTRAL_EMBEDDINGS_URL = 'https://api.mistral.ai/v1/embeddings';
+const MISTRAL_DIMENSIONS = 1024;
 const CLOUDFLARE_MODEL = '@cf/baai/bge-m3';
 const CLOUDFLARE_DIMENSIONS = 1024;
 
@@ -140,6 +143,7 @@ function resolveProviderName(provider: EmbeddingProvider | undefined): Embedding
     case 'local':
     case 'gemini':
     case 'openai':
+    case 'mistral':
     case 'cloudflare':
       return provider ?? 'local';
     default:
@@ -172,6 +176,10 @@ function getOptionalTrimmedCredential(value: string | undefined): string | undef
 
 function hasOwnProperty(value: object, property: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, property);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 function redactErrorText(value: unknown, exactSecrets: readonly string[] = []): string {
@@ -412,6 +420,13 @@ function createProviderMetadata(
         dimensions,
         batch: Object.freeze({ mode: 'native' as const, maxSize: 2048 })
       });
+    case 'mistral':
+      return Object.freeze({
+        name: 'mistral' as const,
+        model: MISTRAL_MODEL,
+        dimensions: MISTRAL_DIMENSIONS,
+        batch: Object.freeze({ mode: 'native' as const })
+      });
     case 'cloudflare':
       return Object.freeze({
         name: 'cloudflare' as const,
@@ -428,6 +443,17 @@ function getEffectiveDimensions(
 ): number {
   if (provider === 'gemini') {
     return DEFAULT_DIMENSIONS;
+  }
+
+  if (provider === 'mistral') {
+    if (dimensions !== undefined && dimensions !== MISTRAL_DIMENSIONS) {
+      throw providerError(
+        'mistral',
+        `${MISTRAL_MODEL} returns ${MISTRAL_DIMENSIONS} dimensions; received dimensions ${dimensions}`
+      );
+    }
+
+    return MISTRAL_DIMENSIONS;
   }
 
   if (provider === 'cloudflare') {
@@ -557,6 +583,76 @@ class GeminiEmbeddingProvider implements EmbeddingProviderClient {
   }
 }
 
+interface OpenAICompatibleEmbeddingsRequest {
+  responseLabel: string;
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  texts: string[];
+  signal: AbortSignal;
+  dimensions?: number;
+  encodingFormat?: 'float';
+  requireIndex?: boolean;
+}
+
+async function requestOpenAICompatibleEmbeddings(
+  request: OpenAICompatibleEmbeddingsRequest
+): Promise<EmbeddingBatchItem[]> {
+  const body: Record<string, unknown> = {
+    input: request.texts,
+    model: request.model
+  };
+
+  if (request.dimensions !== undefined) {
+    body.dimensions = request.dimensions;
+  }
+
+  if (request.encodingFormat !== undefined) {
+    body.encoding_format = request.encodingFormat;
+  }
+
+  const response = await fetch(request.endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${request.apiKey}`
+    },
+    signal: request.signal,
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const requestId = getSafeResponseHeader(response, 'x-request-id');
+    const context = requestId ? ` status ${response.status}, request ${requestId}` : ` status ${response.status}`;
+    throw new Error(context);
+  }
+
+  const data = await response.json() as OpenAIEmbeddingResponse;
+  if (!Array.isArray(data.data)) {
+    throw new Error(`${request.responseLabel} response did not include a data array`);
+  }
+
+  return data.data.map((item: unknown): EmbeddingBatchItem => {
+    if (!isRecord(item)) {
+      throw new Error(`${request.responseLabel} response item was not an object`);
+    }
+
+    const embedding = item.embedding;
+    if (!Array.isArray(embedding)) {
+      throw new Error(`${request.responseLabel} response item did not include an embedding array`);
+    }
+
+    const parsed: EmbeddingBatchItemResult = { embedding };
+    if (hasOwnProperty(item, 'index')) {
+      parsed.index = item.index;
+    } else if (request.requireIndex) {
+      throw new Error(`${request.responseLabel} response item did not include an index`);
+    }
+
+    return parsed;
+  });
+}
+
 class OpenAIEmbeddingProvider implements EmbeddingProviderClient {
   readonly metadata: EmbeddingProviderMetadata;
   readonly #apiKey: string;
@@ -579,47 +675,15 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderClient {
       'openai',
       'API request',
       this.#timeoutMs,
-      async (signal) => {
-        const response = await fetch(OPENAI_EMBEDDINGS_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.#apiKey}`
-          },
-          signal,
-          body: JSON.stringify({
-            input: texts,
-            model: this.metadata.model,
-            dimensions: this.metadata.dimensions
-          })
-        });
-
-        if (!response.ok) {
-          const requestId = getResponseHeader(response, 'x-request-id');
-          const context = requestId ? ` status ${response.status}, request ${requestId}` : ` status ${response.status}`;
-          throw new Error(context);
-        }
-
-        const data = await response.json() as OpenAIEmbeddingResponse;
-        if (!Array.isArray(data.data)) {
-          throw new Error('OpenAI response did not include a data array');
-        }
-
-        return data.data.map((item: unknown): EmbeddingBatchItem => {
-          const typed = item as OpenAIEmbeddingItem;
-          const embedding = typed.embedding;
-          if (!Array.isArray(embedding)) {
-            throw new Error('OpenAI response item did not include an embedding array');
-          }
-
-          const parsed: EmbeddingBatchItemResult = { embedding };
-          if (hasOwnProperty(typed, 'index')) {
-            parsed.index = typed.index;
-          }
-
-          return parsed;
-        });
-      },
+      async (signal) => requestOpenAICompatibleEmbeddings({
+        responseLabel: 'OpenAI',
+        endpoint: OPENAI_EMBEDDINGS_URL,
+        apiKey: this.#apiKey,
+        model: this.metadata.model,
+        texts,
+        signal,
+        dimensions: this.metadata.dimensions
+      }),
       options.signal,
       [this.#apiKey]
     );
@@ -628,6 +692,50 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderClient {
       this.metadata,
       intent,
       validateEmbeddingBatch(items, texts.length, this.metadata.dimensions, 'openai')
+    );
+  }
+}
+
+class MistralEmbeddingProvider implements EmbeddingProviderClient {
+  readonly metadata: EmbeddingProviderMetadata;
+  readonly #apiKey: string;
+  readonly #timeoutMs: number;
+
+  constructor(metadata: EmbeddingProviderMetadata, apiKey: string, timeoutMs: number) {
+    this.metadata = metadata;
+    this.#apiKey = apiKey;
+    this.#timeoutMs = timeoutMs;
+  }
+
+  async embed(texts: string[], options: EmbeddingRequestOptions = {}): Promise<EmbeddingBatchResult> {
+    const intent = resolveIntent(options.intent);
+    if (texts.length === 0) {
+      return createEmbeddingBatchResult(this.metadata, intent, []);
+    }
+
+    assertBatchSize(this.metadata, texts.length);
+    const items = await withTimeout(
+      'mistral',
+      'API request',
+      this.#timeoutMs,
+      async (signal) => requestOpenAICompatibleEmbeddings({
+        responseLabel: 'Mistral',
+        endpoint: MISTRAL_EMBEDDINGS_URL,
+        apiKey: this.#apiKey,
+        model: this.metadata.model,
+        texts,
+        signal,
+        encodingFormat: 'float',
+        requireIndex: true
+      }),
+      options.signal,
+      [this.#apiKey]
+    );
+
+    return createEmbeddingBatchResult(
+      this.metadata,
+      intent,
+      validateEmbeddingBatch(items, texts.length, this.metadata.dimensions, 'mistral')
     );
   }
 }
@@ -732,6 +840,16 @@ export function createEmbeddingProvider(options: EmbeddingOptions = {}): Embeddi
       }
 
       return new OpenAIEmbeddingProvider(metadata, key, timeoutMs);
+    }
+    case 'mistral': {
+      const key = getOptionalTrimmedCredential(
+        options.apiKey ?? getEnvironmentVariable('MISTRAL_API_KEY')
+      );
+      if (!key) {
+        throw new Error('MISTRAL_API_KEY is required for Mistral embeddings');
+      }
+
+      return new MistralEmbeddingProvider(metadata, key, timeoutMs);
     }
     case 'cloudflare': {
       const accountId = getOptionalTrimmedCredential(

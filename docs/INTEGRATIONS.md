@@ -128,8 +128,17 @@ const client = createClient({
 });
 
 const embeddingProvider =
-  process.env.EMBEDDING_PROVIDER as "local" | "cloudflare" | "gemini" | "openai" | undefined;
-const embeddingDimensions = embeddingProvider === "cloudflare" ? 1024 : 768;
+  process.env.EMBEDDING_PROVIDER as
+    | "local"
+    | "cloudflare"
+    | "mistral"
+    | "gemini"
+    | "openai"
+    | undefined;
+const embeddingDimensions =
+  embeddingProvider === "cloudflare" || embeddingProvider === "mistral"
+    ? 1024
+    : 768;
 
 await createTable(client, "articles", embeddingDimensions);
 

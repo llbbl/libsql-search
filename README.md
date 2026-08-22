@@ -23,7 +23,8 @@ Use it when you want:
 - Embedding providers: local Hugging Face `Xenova/all-MiniLM-L6-v2`,
   Cloudflare Workers AI `@cf/baai/bge-m3`, Mistral `mistral-embed`, Google Gemini
   `gemini-embedding-2`, and OpenAI `text-embedding-3-small` /
-  `text-embedding-3-large`
+  `text-embedding-3-large`; self-hosted OpenAI-compatible endpoints are also
+  available for TEI and similar trusted deployments
 - npm distribution plus JSR publishing
 
 ## Install

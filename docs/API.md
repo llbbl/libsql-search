@@ -246,7 +246,13 @@ Provider clients return:
 ```ts
 interface EmbeddingBatchResult {
   embeddings: number[][];
-  provider: "local" | "cloudflare" | "mistral" | "gemini" | "openai";
+  provider:
+    | "local"
+    | "cloudflare"
+    | "mistral"
+    | "gemini"
+    | "openai"
+    | "openai-compatible";
   model: string;
   dimensions: number;
   intent: "document" | "query";
@@ -262,10 +268,19 @@ cardinality, dimensions, finite numeric values, and indexed batch ordering.
 
 ```ts
 interface EmbeddingOptions {
-  provider?: "local" | "cloudflare" | "mistral" | "gemini" | "openai";
+  provider?:
+    | "local"
+    | "cloudflare"
+    | "mistral"
+    | "gemini"
+    | "openai"
+    | "openai-compatible";
   apiKey?: string;
   accountId?: string;
   apiToken?: string;
+  baseUrl?: string;
+  model?: string;
+  batchSize?: number;
   dimensions?: number;
   maxLength?: number;
   intent?: "document" | "query";
@@ -278,6 +293,13 @@ interface EmbeddingOptions {
 `MISTRAL_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY` for those providers.
 Cloudflare uses `accountId` and `apiToken`, which fall back to
 `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
+
+For `provider: "openai-compatible"`, callers must pass `baseUrl`, `model`, and
+`dimensions`. `apiKey` is optional and is used only when explicitly provided;
+the provider never reads `OPENAI_API_KEY`. `batchSize` controls the maximum
+items per outbound request and defaults to `32`. The endpoint is treated as
+trusted server-side configuration and should not be derived from untrusted
+request input.
 
 ### `padEmbedding(embedding, targetDimensions)`
 

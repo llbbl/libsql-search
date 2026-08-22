@@ -213,6 +213,9 @@ Hosted provider clients are scoped to their options. The library does not reuse
 a Cloudflare, Mistral, Gemini, or OpenAI client created with different
 credentials or configuration.
 
+Gemini uses `gemini-embedding-2`. Its default is 3072 dimensions, and explicit
+Gemini dimensions must be an integer from 128 through 3072.
+
 ### `getEmbeddingProviderMetadata(options?)`
 
 Returns the same metadata exposed by `createEmbeddingProvider(options).metadata`

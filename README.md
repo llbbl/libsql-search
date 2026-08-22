@@ -22,7 +22,7 @@ Use it when you want:
 - libSQL/Turso storage and vector search
 - Embedding providers: local `Xenova/all-MiniLM-L6-v2`, Cloudflare Workers AI
   `@cf/baai/bge-m3`, Mistral `mistral-embed`, Google Gemini
-  `text-embedding-004`, and OpenAI `text-embedding-3-small` /
+  `gemini-embedding-2`, and OpenAI `text-embedding-3-small` /
   `text-embedding-3-large`
 - npm distribution plus JSR publishing
 
@@ -99,7 +99,8 @@ Important behavior:
 - Keep dimensions aligned across table creation, indexing, and search queries.
 - `indexContent()` clears existing rows before rebuilding the index.
 - `local` is the default offline provider; Cloudflare is the recommended hosted
-  option. Cloudflare and Mistral use 1024 dimensions.
+  option. Cloudflare and Mistral use 1024 dimensions. Gemini defaults to 3072
+  dimensions and supports 128-3072.
 
 ## Core API
 

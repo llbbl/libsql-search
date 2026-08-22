@@ -12,56 +12,71 @@ import {
 
 const geminiMock = vi.hoisted(() => ({
   keys: [] as string[],
-  modelRequests: [] as Array<{ key: string; model: string }>,
-  requestOptions: [] as unknown[],
-  embedContent: vi.fn(async (text: string, _options?: unknown) => ({
-    embedding: {
-      values: new Array(768).fill(text.length)
-    }
+  requests: [] as unknown[],
+  embedContent: vi.fn(async (request: { contents: string; config?: { outputDimensionality?: number } }) => ({
+    embeddings: [{
+      values: new Array(request.config?.outputDimensionality ?? 3072).fill(request.contents.length)
+    }]
   }))
 }));
 
-vi.mock('@google/generative-ai', () => ({
-  GoogleGenerativeAI: class {
-    readonly key: string;
+vi.mock('@google/genai', () => ({
+  GoogleGenAI: class {
+    readonly models: {
+      embedContent: (request: unknown) => Promise<unknown>;
+    };
 
-    constructor(key: string) {
-      this.key = key;
-      geminiMock.keys.push(key);
-    }
-
-    getGenerativeModel(config: { model: string }) {
-      geminiMock.modelRequests.push({ key: this.key, model: config.model });
-
-      return {
-        embedContent: (text: string, options?: unknown) => {
-          geminiMock.requestOptions.push(options);
-          return geminiMock.embedContent(text, options);
+    constructor(options: { apiKey?: string }) {
+      geminiMock.keys.push(options.apiKey ?? '');
+      this.models = {
+        embedContent: (request: unknown) => {
+          geminiMock.requests.push(request);
+          return geminiMock.embedContent(request as { contents: string; config?: { outputDimensionality?: number } });
         }
       };
     }
   }
 }));
 
+interface GeminiMockRequest {
+  model: string;
+  contents: string;
+  config?: {
+    outputDimensionality?: number;
+    abortSignal?: AbortSignal;
+  };
+}
+
+function getGeminiRequests(): GeminiMockRequest[] {
+  return geminiMock.requests as GeminiMockRequest[];
+}
+
 describe('embeddings', () => {
   let originalOpenAIKey: string | undefined;
+  let originalGeminiKey: string | undefined;
   let originalMistralKey: string | undefined;
   let originalCloudflareAccountId: string | undefined;
   let originalCloudflareApiToken: string | undefined;
 
   beforeEach(() => {
     originalOpenAIKey = process.env.OPENAI_API_KEY;
+    originalGeminiKey = process.env.GEMINI_API_KEY;
     originalMistralKey = process.env.MISTRAL_API_KEY;
     originalCloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
     originalCloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
     delete process.env.MISTRAL_API_KEY;
     delete process.env.CLOUDFLARE_ACCOUNT_ID;
     delete process.env.CLOUDFLARE_API_TOKEN;
     geminiMock.keys = [];
-    geminiMock.modelRequests = [];
-    geminiMock.requestOptions = [];
-    geminiMock.embedContent.mockClear();
+    geminiMock.requests = [];
+    geminiMock.embedContent.mockReset();
+    geminiMock.embedContent.mockImplementation(async (request: { contents: string; config?: { outputDimensionality?: number } }) => ({
+      embeddings: [{
+        values: new Array(request.config?.outputDimensionality ?? 3072).fill(request.contents.length)
+      }]
+    }));
   });
 
   afterEach(() => {
@@ -71,6 +86,11 @@ describe('embeddings', () => {
       delete process.env.OPENAI_API_KEY;
     } else {
       process.env.OPENAI_API_KEY = originalOpenAIKey;
+    }
+    if (originalGeminiKey === undefined) {
+      delete process.env.GEMINI_API_KEY;
+    } else {
+      process.env.GEMINI_API_KEY = originalGeminiKey;
     }
     if (originalMistralKey === undefined) {
       delete process.env.MISTRAL_API_KEY;
@@ -186,6 +206,13 @@ describe('embeddings', () => {
       await expect(
         generateEmbedding('test', { provider: 'gemini' })
       ).rejects.toThrow('GEMINI_API_KEY is required');
+
+      await expect(
+        generateEmbedding('test', {
+          provider: 'gemini',
+          apiKey: '   '
+        })
+      ).rejects.toThrow('GEMINI_API_KEY is required');
     });
 
     it('should throw error for OpenAI without API key', async () => {
@@ -273,6 +300,34 @@ describe('embeddings', () => {
         generateEmbedding('test', { provider: 'openai' })
       ).rejects.toThrow('OPENAI_API_KEY is required');
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('should use Node env fallback for Gemini API key after trimming it', async () => {
+      process.env.GEMINI_API_KEY = '  node-gemini-key  ';
+
+      const embedding = await generateEmbedding('test', {
+        provider: 'gemini',
+        dimensions: 128
+      });
+
+      expect(embedding).toHaveLength(128);
+      expect(geminiMock.keys).toEqual(['node-gemini-key']);
+    });
+
+    it('should use Deno env fallback for Gemini API key', async () => {
+      vi.stubGlobal('Deno', {
+        env: {
+          get: vi.fn((name: string) => name === 'GEMINI_API_KEY' ? 'deno-gemini-key' : undefined)
+        }
+      });
+
+      const embedding = await generateEmbedding('test', {
+        provider: 'gemini',
+        dimensions: 128
+      });
+
+      expect(embedding).toHaveLength(128);
+      expect(geminiMock.keys).toEqual(['deno-gemini-key']);
     });
 
     it('should use Node env fallback for Mistral API key after trimming it', async () => {
@@ -383,7 +438,17 @@ describe('embeddings', () => {
         provider: 'gemini'
       })).toEqual({
         name: 'gemini',
-        model: 'text-embedding-004',
+        model: 'gemini-embedding-2',
+        dimensions: 3072,
+        batch: { mode: 'sequential' }
+      });
+
+      expect(getEmbeddingProviderMetadata({
+        provider: 'gemini',
+        dimensions: 768
+      })).toEqual({
+        name: 'gemini',
+        model: 'gemini-embedding-2',
         dimensions: 768,
         batch: { mode: 'sequential' }
       });
@@ -435,7 +500,43 @@ describe('embeddings', () => {
         provider: 'mistral'
       })).resolves.toEqual([]);
 
+      await expect(generateEmbeddings([], {
+        provider: 'gemini'
+      })).resolves.toEqual([]);
+
       expect(fetchMock).not.toHaveBeenCalled();
+      expect(geminiMock.keys).toEqual([]);
+    });
+
+    it.each([128, 768, 1536, 3072])('accepts Gemini dimensions %i without credentials', (dimensions) => {
+      expect(getEmbeddingProviderMetadata({
+        provider: 'gemini',
+        dimensions
+      })).toEqual({
+        name: 'gemini',
+        model: 'gemini-embedding-2',
+        dimensions,
+        batch: { mode: 'sequential' }
+      });
+
+      expect(geminiMock.keys).toEqual([]);
+    });
+
+    it.each([127, 3073, 128.5, Number.NaN])('rejects invalid Gemini dimensions %s before SDK or credential work', async (dimensions) => {
+      const expected = /gemini-embedding-2 supports dimensions from 128 to 3072/;
+
+      expect(() => getEmbeddingProviderMetadata({
+        provider: 'gemini',
+        dimensions
+      })).toThrow(expected);
+
+      await expect(generateEmbedding('test', {
+        provider: 'gemini',
+        dimensions
+      })).rejects.toThrow(expected);
+
+      expect(geminiMock.keys).toEqual([]);
+      expect(geminiMock.embedContent).not.toHaveBeenCalled();
     });
 
     it('validates and reorders indexed batch results', () => {
@@ -601,6 +702,129 @@ describe('embeddings', () => {
         model: 'mistral-embed',
         encoding_format: 'float'
       });
+    });
+
+    it('uses Gemini Embedding 2 request shape for document and query intents', async () => {
+      await expect(generateEmbedding('markdown body', {
+        provider: 'gemini',
+        apiKey: 'gemini-key',
+        dimensions: 768,
+        intent: 'document'
+      })).resolves.toHaveLength(768);
+
+      await expect(generateEmbedding('deploy docs', {
+        provider: 'gemini',
+        apiKey: 'gemini-key',
+        dimensions: 1536,
+        intent: 'query'
+      })).resolves.toHaveLength(1536);
+
+      expect(getGeminiRequests()).toEqual([
+        {
+          model: 'gemini-embedding-2',
+          contents: 'title: none | text: markdown body',
+          config: {
+            outputDimensionality: 768,
+            abortSignal: expect.any(AbortSignal)
+          }
+        },
+        {
+          model: 'gemini-embedding-2',
+          contents: 'task: search result | query: deploy docs',
+          config: {
+            outputDimensionality: 1536,
+            abortSignal: expect.any(AbortSignal)
+          }
+        }
+      ]);
+    });
+
+    it('uses one Gemini request per input and preserves input order', async () => {
+      geminiMock.embedContent.mockImplementation(async (request: { contents: string; config?: { outputDimensionality?: number } }) => {
+        const value = request.contents.includes('first') ? 1 : 2;
+        return {
+          embeddings: [{
+            values: new Array(request.config?.outputDimensionality ?? 3072).fill(value)
+          }]
+        };
+      });
+
+      const embeddings = await generateEmbeddings(['first', 'second'], {
+        provider: 'gemini',
+        apiKey: 'gemini-key',
+        dimensions: 128,
+        intent: 'query'
+      });
+
+      expect(embeddings).toEqual([
+        new Array(128).fill(1),
+        new Array(128).fill(2)
+      ]);
+      expect(geminiMock.embedContent).toHaveBeenCalledTimes(2);
+      expect(getGeminiRequests().map(request => request.contents)).toEqual([
+        'task: search result | query: first',
+        'task: search result | query: second'
+      ]);
+    });
+
+    it.each([
+      {
+        name: 'missing embeddings array',
+        response: {},
+        expected: /Gemini response did not include an embeddings array/
+      },
+      {
+        name: 'zero embeddings',
+        response: { embeddings: [] },
+        expected: /Gemini response included 0 embedding result/
+      },
+      {
+        name: 'multiple embeddings',
+        response: {
+          embeddings: [
+            { values: new Array(128).fill(1) },
+            { values: new Array(128).fill(2) }
+          ]
+        },
+        expected: /Gemini response included 2 embedding result/
+      },
+      {
+        name: 'missing values array',
+        response: { embeddings: [{}] },
+        expected: /Gemini response did not include embedding values/
+      },
+      {
+        name: 'wrong dimensions',
+        response: { embeddings: [{ values: new Array(127).fill(1) }] },
+        expected: /embedding 0 has 127 dimensions, expected 128/
+      },
+      {
+        name: 'NaN value',
+        response: { embeddings: [{ values: [Number.NaN, ...new Array(127).fill(1)] }] },
+        expected: /embedding 0 contains a non-finite value at dimension 0/
+      },
+      {
+        name: 'Infinity value',
+        response: { embeddings: [{ values: [Number.POSITIVE_INFINITY, ...new Array(127).fill(1)] }] },
+        expected: /embedding 0 contains a non-finite value at dimension 0/
+      }
+    ])('rejects Gemini $name without leaking credentials', async ({ response, expected }) => {
+      const apiKey = 'secret-gemini-key';
+      geminiMock.embedContent.mockResolvedValueOnce(response);
+
+      let message = '';
+      try {
+        await generateEmbedding('test', {
+          provider: 'gemini',
+          apiKey,
+          dimensions: 128
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toMatch(expected);
+      expect(message).not.toContain(apiKey);
     });
 
     it('rejects Mistral responses when items do not include indices', async () => {
@@ -933,17 +1157,19 @@ describe('embeddings', () => {
 
       await generateEmbedding('gemini one', {
         provider: 'gemini',
-        apiKey: 'gemini-first'
+        apiKey: 'gemini-first',
+        dimensions: 128
       });
       await generateEmbedding('gemini two', {
         provider: 'gemini',
-        apiKey: 'gemini-second'
+        apiKey: 'gemini-second',
+        dimensions: 128
       });
 
       expect(geminiMock.keys).toEqual(['gemini-first', 'gemini-second']);
-      expect(geminiMock.modelRequests).toEqual([
-        { key: 'gemini-first', model: 'text-embedding-004' },
-        { key: 'gemini-second', model: 'text-embedding-004' }
+      expect(getGeminiRequests().map(request => request.model)).toEqual([
+        'gemini-embedding-2',
+        'gemini-embedding-2'
       ]);
 
       const mistralFetchMock = vi.fn().mockResolvedValue({
@@ -1121,15 +1347,17 @@ describe('embeddings', () => {
       expect(message).not.toContain(secret);
     });
 
-    it('passes AbortSignal to Gemini request options', async () => {
+    it('passes AbortSignal to Gemini request config', async () => {
       await generateEmbedding('test', {
         provider: 'gemini',
-        apiKey: 'gemini-signal-key'
+        apiKey: 'gemini-signal-key',
+        dimensions: 128
       });
 
-      expect(geminiMock.requestOptions).toHaveLength(1);
-      expect(geminiMock.requestOptions[0]).toEqual({
-        signal: expect.any(AbortSignal)
+      expect(getGeminiRequests()).toHaveLength(1);
+      expect(getGeminiRequests()[0]?.config).toEqual({
+        outputDimensionality: 128,
+        abortSignal: expect.any(AbortSignal)
       });
     });
 
@@ -1308,22 +1536,23 @@ describe('embeddings', () => {
       await expect(embeddingPromise).rejects.toThrow('gemini embedding error: API request was aborted');
 
       resolveFirst({
-        embedding: {
-          values: new Array(768).fill(1)
-        }
+        embeddings: [{
+          values: new Array(3072).fill(1)
+        }]
       });
       await Promise.resolve();
       await Promise.resolve();
 
       expect(geminiMock.embedContent).toHaveBeenCalledTimes(1);
-      expect(geminiMock.embedContent).toHaveBeenCalledWith(
-        'first',
-        { signal: expect.any(AbortSignal) }
-      );
-      expect(geminiMock.requestOptions).toHaveLength(1);
-      expect(geminiMock.requestOptions[0]).toEqual({
-        signal: expect.any(AbortSignal)
+      expect(geminiMock.embedContent).toHaveBeenCalledWith({
+        model: 'gemini-embedding-2',
+        contents: 'title: none | text: first',
+        config: {
+          outputDimensionality: 3072,
+          abortSignal: expect.any(AbortSignal)
+        }
       });
+      expect(getGeminiRequests()).toHaveLength(1);
     });
 
     it('returns provider batch result objects from provider clients', async () => {
@@ -1386,6 +1615,21 @@ describe('embeddings', () => {
       });
       expect(Object.isFrozen(mistralProvider.metadata)).toBe(true);
       expect(Object.isFrozen(mistralProvider.metadata.batch)).toBe(true);
+
+      const geminiProvider = createEmbeddingProvider({
+        provider: 'gemini',
+        apiKey: 'metadata-key',
+        dimensions: 1536
+      });
+
+      expect(geminiProvider.metadata).toEqual({
+        name: 'gemini',
+        model: 'gemini-embedding-2',
+        dimensions: 1536,
+        batch: { mode: 'sequential' }
+      });
+      expect(Object.isFrozen(geminiProvider.metadata)).toBe(true);
+      expect(Object.isFrozen(geminiProvider.metadata.batch)).toBe(true);
     });
   });
 });

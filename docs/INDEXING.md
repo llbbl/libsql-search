@@ -33,6 +33,14 @@ await indexContent({
 That keeps the implementation simple, but it also means a failed rebuild can
 leave the index partially repopulated.
 
+Changing an embedding provider or dimension count requires a full re-embed.
+For Gemini specifically, indexes created with the retired `text-embedding-004`
+model must be rebuilt for `gemini-embedding-2` even when staying at 768
+dimensions, because the model and query/document formatting both changed. If
+you adopt Gemini's 3072-dimensional default, recreate the vector table or build
+into a separate table first; clearing rows with `indexContent()` does not change
+the table's `F32_BLOB` width.
+
 ## Quality Guidelines
 
 - include descriptive frontmatter titles

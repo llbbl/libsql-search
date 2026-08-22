@@ -138,6 +138,8 @@ const embeddingProvider =
 const embeddingDimensions =
   embeddingProvider === "cloudflare" || embeddingProvider === "mistral"
     ? 1024
+    : embeddingProvider === "gemini"
+      ? 3072
     : 768;
 
 await createTable(client, "articles", embeddingDimensions);

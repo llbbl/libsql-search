@@ -1,6 +1,6 @@
 {
   "name": "libsql-search",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Semantic search for static sites using libSQL/Turso with multi-provider embeddings",
   "type": "module",
   "packageManager": "pnpm@10.34.5",
@@ -28,6 +28,7 @@
     "test:coverage": "vitest run --coverage",
     "check:deno": "deno task check",
     "smoke:package": "node ./scripts/smoke-package.mjs",
+    "validate:release-version": "node ./scripts/validate-release-version.mjs",
     "validate:package": "tsc --noEmit && rollup -c && rollup -c rollup.dts.config.js && node ./scripts/smoke-package.mjs",
     "validate:release": "pnpm audit --audit-level moderate && pnpm test:coverage && pnpm validate:package && pnpm check:deno",
     "prepublishOnly": "pnpm validate:release"

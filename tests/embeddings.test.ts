@@ -534,43 +534,80 @@ describe('embeddings', () => {
       })).rejects.toThrow('openai embedding error: API request timed out after 1ms');
     });
 
-    it('times out even when a hosted provider SDK ignores AbortSignal', async () => {
-      geminiMock.embedContent.mockImplementationOnce(() => new Promise(() => {}));
+    it('times out a signal-ignorant in-flight Gemini request deterministically', async () => {
+      vi.useFakeTimers();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      geminiMock.embedContent.mockImplementationOnce(() => {
+        markStarted();
+        return new Promise(() => {});
+      });
 
-      await expect(generateEmbedding('test', {
-        provider: 'gemini',
-        apiKey: 'gemini-timeout-key',
-        timeoutMs: 1
-      })).rejects.toThrow('gemini embedding error: API request timed out after 1ms');
+      try {
+        const embeddingPromise = generateEmbedding('test', {
+          provider: 'gemini',
+          apiKey: 'gemini-timeout-key',
+          timeoutMs: 1000
+        });
+
+        await started;
+        const rejection = expect(embeddingPromise).rejects.toThrow(
+          'gemini embedding error: API request timed out after 1000ms'
+        );
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
-    it('does not start later Gemini batch items after a signal-ignorant item resolves late', async () => {
+    it('does not start later Gemini batch items after caller abort and late item resolution', async () => {
+      const controller = new AbortController();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
       let resolveFirst: (value: unknown) => void = () => {};
-      geminiMock.embedContent.mockImplementationOnce(() => new Promise((resolve) => {
-        resolveFirst = resolve;
-      }));
+      geminiMock.embedContent.mockImplementationOnce(() => {
+        markStarted();
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      });
 
       const embeddingPromise = generateEmbeddings(['first', 'second'], {
         provider: 'gemini',
-        apiKey: 'gemini-timeout-key',
-        timeoutMs: 1
+        apiKey: 'gemini-abort-key',
+        timeoutMs: 30_000,
+        signal: controller.signal
       });
 
-      await expect(embeddingPromise).rejects.toThrow('gemini embedding error: API request timed out after 1ms');
+      await started;
       expect(geminiMock.embedContent).toHaveBeenCalledTimes(1);
+      controller.abort();
+
+      await expect(embeddingPromise).rejects.toThrow('gemini embedding error: API request was aborted');
 
       resolveFirst({
         embedding: {
           values: new Array(768).fill(1)
         }
       });
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await Promise.resolve();
+      await Promise.resolve();
 
       expect(geminiMock.embedContent).toHaveBeenCalledTimes(1);
       expect(geminiMock.embedContent).toHaveBeenCalledWith(
         'first',
         { signal: expect.any(AbortSignal) }
       );
+      expect(geminiMock.requestOptions).toHaveLength(1);
+      expect(geminiMock.requestOptions[0]).toEqual({
+        signal: expect.any(AbortSignal)
+      });
     });
 
     it('returns provider batch result objects from provider clients', async () => {

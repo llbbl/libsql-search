@@ -88,3 +88,19 @@ jobs:
       - name: Run dependency review
         uses: actions/dependency-review-action@v4
         if: github.event_name == 'pull_request'
+        with:
+          # Temporary Xenova audit baseline for GH #21.
+          # Remove when @xenova/transformers is replaced.
+          allow-ghsas: >-
+            GHSA-xq3m-2v4x-88gg,
+            GHSA-66ff-xgx4-vchm,
+            GHSA-2pr8-phx7-x9h3,
+            GHSA-fx83-v9x8-x52w,
+            GHSA-75px-5xx7-5xc7,
+            GHSA-jvwf-75h9-cwgg,
+            GHSA-685m-2w69-288q,
+            GHSA-q6x5-8v7m-xcrf,
+            GHSA-jggg-4jg4-v7c6,
+            GHSA-wcpc-wj8m-hjx6,
+            GHSA-f38q-mgvj-vph7,
+            GHSA-f88m-g3jw-g9cj

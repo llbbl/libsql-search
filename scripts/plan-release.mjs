@@ -6,6 +6,7 @@ const MANIFESTS = [
   { path: './jsr.json', expectedName: '@logan/libsql-search' },
   { path: './deno.json', expectedName: '@logan/libsql-search' },
 ];
+const RELEASE_IGNORED_PATH_PREFIXES = ['.github/', 'docs/'];
 
 function fail(message) {
   throw new Error(`release planning failed: ${message}`);
@@ -83,6 +84,14 @@ export function incrementVersion(version, bump) {
   fail(`unsupported bump type "${bump}"`);
 }
 
+export function isIgnoredReleasePath(path) {
+  return RELEASE_IGNORED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
+export function hasEligibleReleasePath(paths) {
+  return paths.some((path) => !isIgnoredReleasePath(path));
+}
+
 export function planRelease({ tags, commitCount, commitsText, manifestVersion }) {
   const latest = highestStableTag(tags);
 
@@ -124,6 +133,22 @@ export function planRelease({ tags, commitCount, commitsText, manifestVersion })
 
 function runGit(args) {
   return execFileSync('git', args, { encoding: 'utf8' }).trim();
+}
+
+function changedPathsForCommit(commit) {
+  return runGit(['show', '--format=', '--name-only', '--first-parent', '--root', '--diff-merges=first-parent', commit])
+    .split('\n')
+    .filter(Boolean);
+}
+
+function collectEligibleCommits(commitRange) {
+  const commits = runGit(['rev-list', '--reverse', commitRange]).split('\n').filter(Boolean);
+
+  return commits.filter((commit) => hasEligibleReleasePath(changedPathsForCommit(commit)));
+}
+
+function collectCommitMessages(commits) {
+  return commits.map((commit) => runGit(['log', '-1', '--pretty=format:%s%n%b', commit])).join('\n');
 }
 
 function readJson(path) {
@@ -180,11 +205,11 @@ export function collectPlan() {
   const latest = highestStableTag(tags);
   const hasRealLatestTag = tags.includes(latest.tag);
   const commitRange = hasRealLatestTag ? `${latest.tag}..HEAD` : 'HEAD';
-  const commitCount = Number(runGit(['rev-list', '--count', commitRange]));
-  const commitsText = commitCount > 0 ? runGit(['log', commitRange, '--pretty=format:%s%n%b']) : '';
+  const eligibleCommits = collectEligibleCommits(commitRange);
+  const commitsText = collectCommitMessages(eligibleCommits);
   return planRelease({
     tags,
-    commitCount,
+    commitCount: eligibleCommits.length,
     commitsText,
     manifestVersion: readManifestVersion(),
   });

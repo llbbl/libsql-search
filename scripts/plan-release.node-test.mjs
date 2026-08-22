@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,35 @@ import {
   parseStableTag,
   planRelease,
 } from './plan-release.mjs';
+
+function createTempRepo() {
+  const repo = mkdtempSync(join(tmpdir(), 'libsql-search-release-plan-'));
+  const run = (args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const writeJson = (path, value) => writeFileSync(join(repo, path), `${JSON.stringify(value, null, 2)}\n`);
+
+  run(['init', '-b', 'main']);
+  run(['config', 'user.name', 'Test User']);
+  run(['config', 'user.email', 'test@example.com']);
+  writeJson('package.json', { name: 'libsql-search', version: '0.1.4' });
+  writeJson('jsr.json', { name: '@logan/libsql-search', version: '0.1.4' });
+  writeJson('deno.json', { name: '@logan/libsql-search', version: '0.1.4' });
+  run(['add', '.']);
+  run(['commit', '-m', 'chore: initial release']);
+  run(['tag', 'v0.1.4']);
+
+  return { repo, run };
+}
+
+function withCwd(path, callback) {
+  const originalCwd = process.cwd();
+
+  try {
+    process.chdir(path);
+    return callback();
+  } finally {
+    process.chdir(originalCwd);
+  }
+}
 
 test('parseStableTag accepts only stable vX.Y.Z tags', () => {
   assert.deepEqual(parseStableTag('v1.2.3'), {
@@ -33,20 +62,7 @@ test('highestStableTag ignores malformed and prerelease tags', () => {
 });
 
 test('collectPlan ignores higher stable tags that are not merged into HEAD', () => {
-  const originalCwd = process.cwd();
-  const repo = mkdtempSync(join(tmpdir(), 'libsql-search-release-plan-'));
-  const run = (args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
-  const writeJson = (path, value) => writeFileSync(join(repo, path), `${JSON.stringify(value, null, 2)}\n`);
-
-  run(['init', '-b', 'main']);
-  run(['config', 'user.name', 'Test User']);
-  run(['config', 'user.email', 'test@example.com']);
-  writeJson('package.json', { name: 'libsql-search', version: '0.1.4' });
-  writeJson('jsr.json', { name: '@logan/libsql-search', version: '0.1.4' });
-  writeJson('deno.json', { name: '@logan/libsql-search', version: '0.1.4' });
-  run(['add', '.']);
-  run(['commit', '-m', 'chore: initial release']);
-  run(['tag', 'v0.1.4']);
+  const { repo, run } = createTempRepo();
   writeFileSync(join(repo, 'main-change.txt'), 'main\n');
   run(['add', '.']);
   run(['commit', '-m', 'fix: main patch']);
@@ -58,15 +74,48 @@ test('collectPlan ignores higher stable tags that are not merged into HEAD', () 
   run(['tag', 'v99.0.0']);
   run(['switch', 'main']);
 
-  try {
-    process.chdir(repo);
+  withCwd(repo, () => {
     const plan = collectPlan();
 
     assert.equal(plan.latestTag, 'v0.1.4');
     assert.equal(plan.version, '0.1.5');
-  } finally {
-    process.chdir(originalCwd);
-  }
+  });
+});
+
+test('collectPlan skips release when commits after the latest tag only change docs', () => {
+  const { repo, run } = createTempRepo();
+  mkdirSync(join(repo, 'docs'));
+  writeFileSync(join(repo, 'docs', 'release.md'), 'docs\n');
+  run(['add', '.']);
+  run(['commit', '-m', 'feat: docs-only feature text']);
+
+  withCwd(repo, () => {
+    const plan = collectPlan();
+
+    assert.equal(plan.shouldRelease, false);
+    assert.equal(plan.latestTag, 'v0.1.4');
+    assert.equal(plan.version, '');
+  });
+});
+
+test('collectPlan releases eligible code when ignored docs-only commit is HEAD', () => {
+  const { repo, run } = createTempRepo();
+  writeFileSync(join(repo, 'src.ts'), 'export const value = 1;\n');
+  run(['add', '.']);
+  run(['commit', '-m', 'fix: code patch']);
+  mkdirSync(join(repo, 'docs'));
+  writeFileSync(join(repo, 'docs', 'release.md'), 'docs\n');
+  run(['add', '.']);
+  run(['commit', '-m', 'feat: docs-only feature text']);
+
+  withCwd(repo, () => {
+    const plan = collectPlan();
+
+    assert.equal(plan.shouldRelease, true);
+    assert.equal(plan.bump, 'patch');
+    assert.equal(plan.version, '0.1.5');
+    assert.equal(plan.reason, 'Selected 0.1.5 from 1 commit(s) after v0.1.4.');
+  });
 });
 
 test('detectBump handles breaking changes, features, and patch fallback', () => {

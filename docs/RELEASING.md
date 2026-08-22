@@ -7,7 +7,7 @@ and JSR, then creates GitHub Release notes after both registries succeed.
 
 ## Automatic release flow
 
-1. A push to `main` starts `.github/workflows/publish.yml`.
+1. Every push to `main` starts `.github/workflows/publish.yml`.
 2. The workflow ignores self-generated `chore(release): ...` commits.
 3. A serialized release-writer job fetches the current `origin/main` after it
    has the release slot. If `origin/main` moved beyond the triggering commit,
@@ -15,8 +15,12 @@ and JSR, then creates GitHub Release notes after both registries succeed.
 4. The release planner compares commits since the highest stable `vX.Y.Z` tag
    merged into the release commit. Higher tags that are not reachable from
    `main` are ignored so a stray or divergent tag cannot make the default
-   release line jump. Breaking changes bump major, `feat:` bumps minor, and all
-   other commits bump patch.
+   release line jump. Commits whose changed files are confined to `docs/**` or
+   `.github/**` do not count as release-eligible and do not affect the bump. If
+   the newest `main` commit is docs-only but an earlier untagged code or README
+   commit is still pending, that newest run releases the accumulated eligible
+   changes. Breaking changes bump major, `feat:` bumps minor, and all other
+   eligible commits bump patch.
 5. `package.json`, `jsr.json`, and `deno.json` are synchronized to the chosen
    version. If they already match the chosen version, no release commit is
    created.

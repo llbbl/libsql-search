@@ -22,6 +22,23 @@ interface ProviderCache {
 
 const providerCache: ProviderCache = {};
 
+function getEnvironmentVariable(name: string): string | undefined {
+  const runtime = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+    Deno?: { env?: { get?: (name: string) => string | undefined } };
+  };
+  const nodeValue = runtime.process?.env?.[name];
+  if (nodeValue) {
+    return nodeValue;
+  }
+
+  try {
+    return runtime.Deno?.env?.get?.(name);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Generate embeddings using the specified provider
  */
@@ -81,7 +98,7 @@ async function generateGeminiEmbedding(
   text: string,
   apiKey?: string
 ): Promise<number[]> {
-  const key = apiKey || process.env.GEMINI_API_KEY;
+  const key = apiKey || getEnvironmentVariable('GEMINI_API_KEY');
   if (!key) {
     throw new Error('GEMINI_API_KEY is required for Gemini embeddings');
   }
@@ -106,7 +123,7 @@ async function generateOpenAIEmbedding(
   apiKey?: string,
   dimensions: number = 1536
 ): Promise<number[]> {
-  const key = apiKey || process.env.OPENAI_API_KEY;
+  const key = apiKey || getEnvironmentVariable('OPENAI_API_KEY');
   if (!key) {
     throw new Error('OPENAI_API_KEY is required for OpenAI embeddings');
   }

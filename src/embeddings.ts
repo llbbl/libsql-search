@@ -60,9 +60,9 @@ interface RuntimeEnvironment {
 }
 
 interface GeminiEmbeddingResult {
-  embedding?: {
+  embeddings?: Array<{
     values?: unknown;
-  };
+  }>;
 }
 
 interface OpenAIEmbeddingResponse {
@@ -85,7 +85,10 @@ const DEFAULT_DIMENSIONS = 768;
 const DEFAULT_MAX_LENGTH = 8000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';
-const GEMINI_MODEL = 'text-embedding-004';
+const GEMINI_MODEL = 'gemini-embedding-2';
+const GEMINI_DIMENSIONS = 3072;
+const GEMINI_MIN_DIMENSIONS = 128;
+const GEMINI_MAX_DIMENSIONS = 3072;
 const OPENAI_SMALL_MODEL = 'text-embedding-3-small';
 const OPENAI_LARGE_MODEL = 'text-embedding-3-large';
 const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
@@ -231,6 +234,29 @@ function getSafeResponseHeader(response: Response, name: string): string | undef
 
 function createCloudflareEmbeddingsUrl(accountId: string): string {
   return `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/embeddings`;
+}
+
+function formatGeminiEmbeddingContent(text: string, intent: EmbeddingIntent): string {
+  return intent === 'query'
+    ? `task: search result | query: ${text}`
+    : `title: none | text: ${text}`;
+}
+
+function parseGeminiEmbeddingResult(result: GeminiEmbeddingResult): number[] {
+  if (!Array.isArray(result.embeddings)) {
+    throw new Error('Gemini response did not include an embeddings array');
+  }
+
+  if (result.embeddings.length !== 1) {
+    throw new Error(`Gemini response included ${result.embeddings.length} embedding result(s) for one input`);
+  }
+
+  const values = result.embeddings[0]?.values;
+  if (!Array.isArray(values)) {
+    throw new Error('Gemini response did not include embedding values');
+  }
+
+  return values;
 }
 
 async function withTimeout<T>(
@@ -410,7 +436,7 @@ function createProviderMetadata(
       return Object.freeze({
         name: 'gemini' as const,
         model: GEMINI_MODEL,
-        dimensions: DEFAULT_DIMENSIONS,
+        dimensions,
         batch: Object.freeze({ mode: 'sequential' as const })
       });
     case 'openai':
@@ -442,7 +468,19 @@ function getEffectiveDimensions(
   dimensions: number | undefined
 ): number {
   if (provider === 'gemini') {
-    return DEFAULT_DIMENSIONS;
+    const effectiveDimensions = dimensions ?? GEMINI_DIMENSIONS;
+    if (
+      !Number.isInteger(effectiveDimensions)
+      || effectiveDimensions < GEMINI_MIN_DIMENSIONS
+      || effectiveDimensions > GEMINI_MAX_DIMENSIONS
+    ) {
+      throw providerError(
+        'gemini',
+        `${GEMINI_MODEL} supports dimensions from ${GEMINI_MIN_DIMENSIONS} to ${GEMINI_MAX_DIMENSIONS}; received dimensions ${String(dimensions)}`
+      );
+    }
+
+    return effectiveDimensions;
   }
 
   if (provider === 'mistral') {
@@ -558,17 +596,19 @@ class GeminiEmbeddingProvider implements EmbeddingProviderClient {
       'API request',
       this.#timeoutMs,
       async (signal) => {
-        const { GoogleGenerativeAI } = await import('@google/generative-ai');
-        const genAI = new GoogleGenerativeAI(this.#apiKey);
-        const model = genAI.getGenerativeModel({ model: this.metadata.model });
+        const { GoogleGenAI } = await import('@google/genai');
+        const client = new GoogleGenAI({ apiKey: this.#apiKey });
         return embedSequentially('gemini', 'API request', texts, signal, async (text, itemSignal) => {
-          const result = await model.embedContent(text, { signal: itemSignal }) as GeminiEmbeddingResult;
-          const values = result.embedding?.values;
-          if (!Array.isArray(values)) {
-            throw new Error('Gemini response did not include embedding values');
-          }
+          const result = await client.models.embedContent({
+            model: this.metadata.model,
+            contents: formatGeminiEmbeddingContent(text, intent),
+            config: {
+              outputDimensionality: this.metadata.dimensions,
+              abortSignal: itemSignal
+            }
+          }) as GeminiEmbeddingResult;
 
-          return values;
+          return parseGeminiEmbeddingResult(result);
         });
       },
       options.signal,
@@ -826,7 +866,9 @@ export function createEmbeddingProvider(options: EmbeddingOptions = {}): Embeddi
     case 'local':
       return new LocalEmbeddingProvider(metadata, timeoutMs);
     case 'gemini': {
-      const key = options.apiKey || getEnvironmentVariable('GEMINI_API_KEY');
+      const key = getOptionalTrimmedCredential(
+        options.apiKey ?? getEnvironmentVariable('GEMINI_API_KEY')
+      );
       if (!key) {
         throw new Error('GEMINI_API_KEY is required for Gemini embeddings');
       }

@@ -6,7 +6,7 @@ const external = [
   '@libsql/client',
   '@xenova/transformers',
   'gray-matter',
-  '@google/generative-ai',
+  '@google/genai',
   'fs',
   'path',
   'fs/promises',

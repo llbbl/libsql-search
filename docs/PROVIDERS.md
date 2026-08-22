@@ -29,7 +29,8 @@ interface EmbeddingOptions {
 ```
 
 - `provider` defaults to `"local"`
-- `dimensions` defaults to `768`
+- `dimensions` defaults to `768` for the library's default local provider.
+  Provider-specific defaults can differ; Gemini defaults to `3072`.
 - `maxLength` defaults to `8000`
 - `intent` can be `"document"` or `"query"`; indexing defaults to
   `"document"` and search defaults to `"query"` unless explicitly set
@@ -176,22 +177,29 @@ Behavior:
 
 Provider value: `gemini`
 
-Gemini uses Google `text-embedding-004`.
+Gemini uses Google `gemini-embedding-2` through `@google/genai`.
 
 ```ts
 embeddingOptions: {
   provider: "gemini",
   apiKey: process.env.GEMINI_API_KEY,
+  dimensions: 3072,
 }
 ```
 
 Behavior:
 
 - if `apiKey` is omitted, the library reads `GEMINI_API_KEY`
-- Gemini returns 768 dimensions natively
-- metadata reports `text-embedding-004` and 768 dimensions
+- blank Gemini credentials are treated as missing
+- Gemini defaults to 3072 dimensions
+- explicit Gemini dimensions must be integers from 128 through 3072
+- 768, 1536, and 3072 are recommended practical sizes
+- metadata reports `gemini-embedding-2` and the effective dimensions
 - batch metadata is `{ mode: "sequential" }`
-- the current implementation does not expose model selection
+- the library sends one SDK request per input and verifies one vector per input
+- document inputs are formatted as `title: none | text: ...`
+- query inputs are formatted as `task: search result | query: ...`
+- the current implementation does not expose custom model selection
 
 ## OpenAI
 
@@ -223,9 +231,17 @@ Behavior:
 - `cloudflare` is fixed at `1024`
 - `mistral` is fixed at `1024`
 - local embeddings are padded from 384 to your target size
-- Gemini stays at 768
+- Gemini defaults to `3072` and accepts explicit dimensions from `128` through
+  `3072`; use `768`, `1536`, or `3072` unless you have a specific reason
 - OpenAI can be used at 1536 or 3072, or another supported OpenAI dimension
   value you explicitly set
 
 If you switch provider or dimensions for an existing table, recreate the table
 or rebuild the index into a separate table so stored vectors stay consistent.
+
+Existing Gemini indexes created with `text-embedding-004` must be fully
+re-embedded for `gemini-embedding-2`, even if you keep `dimensions: 768`,
+because both the model and query/document input formatting changed. If you move
+to the new 3072-dimensional default, create a new table or recreate the vector
+table first; `indexContent()` clears rows but does not change the `F32_BLOB`
+width. A separate table is safer because rebuilds are not transactional.

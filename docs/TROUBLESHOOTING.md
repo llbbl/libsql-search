@@ -12,3 +12,6 @@ Common operational checks:
 - verify hosted providers have `CLOUDFLARE_ACCOUNT_ID` and
   `CLOUDFLARE_API_TOKEN`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`, or
   `OPENAI_API_KEY` available as required by the selected provider
+- after upgrading an existing Gemini index, fully re-embed with
+  `gemini-embedding-2`; for 3072-dimensional Gemini indexes, recreate the table
+  or use a new table name before rebuilding

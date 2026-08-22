@@ -15,7 +15,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "docs"
   ],
   "scripts": {
     "build": "tsc --noEmit && rollup -c && rollup -c rollup.dts.config.js",

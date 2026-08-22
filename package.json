@@ -29,7 +29,7 @@
     "check:deno": "deno task check",
     "smoke:package": "node ./scripts/smoke-package.mjs",
     "validate:package": "tsc --noEmit && rollup -c && rollup -c rollup.dts.config.js && node ./scripts/smoke-package.mjs",
-    "validate:release": "vitest run --coverage && tsc --noEmit && rollup -c && rollup -c rollup.dts.config.js && node ./scripts/smoke-package.mjs && deno task check",
+    "validate:release": "pnpm audit --audit-level moderate && pnpm test:coverage && pnpm validate:package && pnpm check:deno",
     "prepublishOnly": "pnpm validate:release"
   },
   "keywords": [

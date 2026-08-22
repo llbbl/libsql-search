@@ -29,8 +29,9 @@ interface EmbeddingOptions {
 ```
 
 - `provider` defaults to `"local"`
-- `dimensions` defaults to `768` for the library's default local provider.
-  Provider-specific defaults can differ; Gemini defaults to `3072`.
+- `dimensions` defaults to `384` for the library's default local provider.
+  Provider-specific defaults can differ; Cloudflare and Mistral use `1024`,
+  and Gemini defaults to `3072`.
 - `maxLength` defaults to `8000`
 - `intent` can be `"document"` or `"query"`; indexing defaults to
   `"document"` and search defaults to `"query"` unless explicitly set
@@ -87,7 +88,8 @@ vectors plus provider, model, dimensions, and intent. The compatibility helpers
 
 Cloudflare, Mistral, Gemini, and OpenAI clients are scoped to their current
 options. They are not cached globally across different credentials or
-configurations. The local Xenova model can be cached by model name.
+configurations. The local Hugging Face Transformers pipeline is loaded lazily
+and cached by model name.
 
 Hosted provider failures are reported with bounded provider/status/request-id
 context and without raw upstream bodies, credentials, Authorization headers, or
@@ -98,24 +100,26 @@ full URLs with query strings.
 Provider value: `local`
 
 The local provider loads `Xenova/all-MiniLM-L6-v2` through
-`@xenova/transformers`.
+`@huggingface/transformers`.
 
 ```ts
 embeddingOptions: {
   provider: "local",
-  dimensions: 768,
 }
 ```
 
 Notes:
 
-- the model emits 384 dimensions and `libsql-search` pads or truncates to your
-  requested size
-- metadata reports the requested output dimensions
+- the model emits 384 dimensions, and local vectors are validated at exactly
+  384 finite numbers
+- `dimensions: 384` is accepted explicitly; any other local dimension is
+  rejected before the runtime is imported or loaded
+- metadata reports 384 dimensions
 - batch metadata is `{ mode: "sequential" }`
-- the first run downloads the model and can take longer on a fresh machine
+- the first run downloads and caches the model and can take longer on a fresh
+  machine
 - no API key is required
-- this remains the default provider for backward compatibility and offline use
+- this remains the default provider for offline use
 
 ## Cloudflare Workers AI
 
@@ -227,10 +231,9 @@ Behavior:
 
 ## Dimension Guidelines
 
-- `local` defaults to `768`
+- `local` is fixed at `384`
 - `cloudflare` is fixed at `1024`
 - `mistral` is fixed at `1024`
-- local embeddings are padded from 384 to your target size
 - Gemini defaults to `3072` and accepts explicit dimensions from `128` through
   `3072`; use `768`, `1536`, or `3072` unless you have a specific reason
 - OpenAI can be used at 1536 or 3072, or another supported OpenAI dimension
@@ -245,3 +248,14 @@ because both the model and query/document input formatting changed. If you move
 to the new 3072-dimensional default, create a new table or recreate the vector
 table first; `indexContent()` clears rows but does not change the `F32_BLOB`
 width. A separate table is safer because rebuilds are not transactional.
+
+Existing local indexes created with the older padded-local behavior usually have
+`F32_BLOB(768)` rows containing the 384 model values followed by zero padding.
+The current local contract stores the native 384-dimensional model output. To
+migrate, create or recreate a `F32_BLOB(384)` table and run a full re-index
+before querying it. Using the same model ID avoids an intentional model-space
+change, but bit-identical vectors are not promised across runtime, model
+revision, dtype, pooling, or normalization changes; validate search quality and
+re-index when those details change.
+
+Routine unit tests mock the local runtime and do not download the model.

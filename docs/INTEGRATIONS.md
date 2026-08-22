@@ -26,7 +26,6 @@ export const POST: APIRoute = async ({ request }) => {
     limit,
     embeddingOptions: {
       provider: "local",
-      dimensions: 768,
     },
   });
 
@@ -79,7 +78,6 @@ export async function POST(request: NextRequest) {
     limit,
     embeddingOptions: {
       provider: "local",
-      dimensions: 768,
     },
   });
 
@@ -135,12 +133,16 @@ const embeddingProvider =
     | "gemini"
     | "openai"
     | undefined;
-const embeddingDimensions =
-  embeddingProvider === "cloudflare" || embeddingProvider === "mistral"
-    ? 1024
-    : embeddingProvider === "gemini"
-      ? 3072
-    : 768;
+
+const dimensionsByProvider = {
+  local: 384,
+  cloudflare: 1024,
+  mistral: 1024,
+  gemini: 3072,
+  openai: 1536,
+} as const;
+
+const embeddingDimensions = dimensionsByProvider[embeddingProvider ?? "local"];
 
 await createTable(client, "articles", embeddingDimensions);
 

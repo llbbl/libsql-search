@@ -194,7 +194,7 @@ async function insertDocument(
 export async function createTable(
   client: Client,
   tableName: string = 'articles',
-  dimensions: number = 768
+  dimensions: number = 384
 ): Promise<void> {
   const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
   const vectorDimensions = normalizeVectorDimensions(dimensions);

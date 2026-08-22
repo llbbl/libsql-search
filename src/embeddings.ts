@@ -1,8 +1,7 @@
 /**
  * Multi-provider embedding generation
- * Supports local (Xenova), Gemini, OpenAI, Mistral, and Cloudflare Workers AI
+ * Supports local Hugging Face Transformers, Gemini, OpenAI, Mistral, and Cloudflare Workers AI
  */
-import type { FeatureExtractionPipeline } from '@xenova/transformers';
 
 export type EmbeddingProvider = 'local' | 'gemini' | 'openai' | 'mistral' | 'cloudflare';
 export type EmbeddingIntent = 'document' | 'query';
@@ -50,8 +49,26 @@ export interface EmbeddingOptions {
   signal?: AbortSignal;
 }
 
-interface LocalModelCache {
-  model?: FeatureExtractionPipeline;
+interface LocalEmbeddingOutput {
+  data: ArrayLike<number>;
+}
+
+type LocalFeatureExtractionPipeline = (
+  text: string,
+  options: { pooling: 'mean'; normalize: true }
+) => LocalEmbeddingOutput | Promise<LocalEmbeddingOutput>;
+
+interface HuggingFaceTransformersModule {
+  pipeline: (
+    task: 'feature-extraction',
+    model: string
+  ) => Promise<LocalFeatureExtractionPipeline>;
+}
+
+interface LocalModelCacheEntry {
+  promise: Promise<LocalFeatureExtractionPipeline>;
+  settled: boolean;
+  waiters: number;
 }
 
 interface RuntimeEnvironment {
@@ -81,7 +98,8 @@ export interface EmbeddingBatchItemResult {
 
 export type EmbeddingBatchItem = number[] | EmbeddingBatchItemResult;
 
-const DEFAULT_DIMENSIONS = 768;
+const OPENAI_DEFAULT_DIMENSIONS = 768;
+const LOCAL_DIMENSIONS = 384;
 const DEFAULT_MAX_LENGTH = 8000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';
@@ -98,7 +116,7 @@ const MISTRAL_DIMENSIONS = 1024;
 const CLOUDFLARE_MODEL = '@cf/baai/bge-m3';
 const CLOUDFLARE_DIMENSIONS = 1024;
 
-const localModelCacheByModel = new Map<string, LocalModelCache>();
+const localModelCacheByModel = new Map<string, LocalModelCacheEntry>();
 
 function getEnvironmentVariable(name: string): string | undefined {
   const runtime = globalThis as typeof globalThis & RuntimeEnvironment;
@@ -114,19 +132,82 @@ function getEnvironmentVariable(name: string): string | undefined {
   }
 }
 
-async function getLocalEmbeddingModel(modelName: string): Promise<FeatureExtractionPipeline> {
+function deletePendingLocalModelCache(modelName: string, entry: LocalModelCacheEntry): void {
+  if (!entry.settled && entry.waiters === 0 && localModelCacheByModel.get(modelName) === entry) {
+    localModelCacheByModel.delete(modelName);
+  }
+}
+
+async function getLocalEmbeddingModel(
+  modelName: string,
+  signal: AbortSignal
+): Promise<LocalFeatureExtractionPipeline> {
   const cached = localModelCacheByModel.get(modelName);
-  if (cached?.model) {
-    return cached.model;
+  if (cached) {
+    cached.waiters++;
+    try {
+      return await waitForLocalEmbeddingModel(modelName, cached, signal);
+    } finally {
+      cached.waiters--;
+      deletePendingLocalModelCache(modelName, cached);
+    }
   }
 
-  console.log(`Loading local embedding model (${modelName})...`);
-  const { pipeline } = await import('@xenova/transformers');
-  const model = await pipeline('feature-extraction', modelName);
-  localModelCacheByModel.set(modelName, { model });
-  console.log('Local model loaded successfully');
+  const modelPromise = (async () => {
+    console.log(`Loading local embedding model (${modelName})...`);
+    const { pipeline } = await import('@huggingface/transformers') as HuggingFaceTransformersModule;
+    const model = await pipeline('feature-extraction', modelName);
+    console.log('Local model loaded successfully');
+    return model;
+  })();
 
-  return model;
+  const entry: LocalModelCacheEntry = {
+    promise: modelPromise,
+    settled: false,
+    waiters: 1
+  };
+  localModelCacheByModel.set(modelName, entry);
+
+  modelPromise
+    .then(() => {
+      entry.settled = true;
+    })
+    .catch(() => {
+      localModelCacheByModel.delete(modelName);
+    });
+
+  try {
+    return await waitForLocalEmbeddingModel(modelName, entry, signal);
+  } finally {
+    entry.waiters--;
+    deletePendingLocalModelCache(modelName, entry);
+  }
+}
+
+async function waitForLocalEmbeddingModel(
+  modelName: string,
+  entry: LocalModelCacheEntry,
+  signal: AbortSignal
+): Promise<LocalFeatureExtractionPipeline> {
+  if (signal.aborted) {
+    deletePendingLocalModelCache(modelName, entry);
+    throw providerError('local', 'model inference was aborted');
+  }
+
+  let rejectAbort: (error: Error) => void = () => {};
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = (): void => {
+    rejectAbort(providerError('local', 'model inference was aborted'));
+  };
+
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    return await Promise.race([entry.promise, abortPromise]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 function getPositiveInteger(value: number, optionName: string): number {
@@ -467,6 +548,17 @@ function getEffectiveDimensions(
   provider: EmbeddingProvider,
   dimensions: number | undefined
 ): number {
+  if (provider === 'local') {
+    if (dimensions !== undefined && dimensions !== LOCAL_DIMENSIONS) {
+      throw providerError(
+        'local',
+        `${LOCAL_MODEL} returns ${LOCAL_DIMENSIONS} dimensions; received dimensions ${String(dimensions)}`
+      );
+    }
+
+    return LOCAL_DIMENSIONS;
+  }
+
   if (provider === 'gemini') {
     const effectiveDimensions = dimensions ?? GEMINI_DIMENSIONS;
     if (
@@ -505,7 +597,7 @@ function getEffectiveDimensions(
     return CLOUDFLARE_DIMENSIONS;
   }
 
-  return getPositiveInteger(dimensions ?? DEFAULT_DIMENSIONS, 'dimensions');
+  return getPositiveInteger(dimensions ?? OPENAI_DEFAULT_DIMENSIONS, 'dimensions');
 }
 
 function assertBatchSize(metadata: EmbeddingProviderMetadata, count: number): void {
@@ -552,14 +644,13 @@ class LocalEmbeddingProvider implements EmbeddingProviderClient {
       'model inference',
       this.#timeoutMs,
       async (signal) => {
-        const model = await getLocalEmbeddingModel(this.metadata.model);
+        const model = await getLocalEmbeddingModel(this.metadata.model, signal);
         return embedSequentially('local', 'model inference', texts, signal, async (text) => {
           const output = await model(text, {
             pooling: 'mean',
             normalize: true
           });
-          const embedding = Array.from(output.data as ArrayLike<number>);
-          return padEmbedding(embedding, this.metadata.dimensions);
+          return Array.from(output.data);
         });
       },
       options.signal

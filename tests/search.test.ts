@@ -28,7 +28,7 @@ describe('search', () => {
   }) {
     const embedding = await generateEmbedding(data.content, {
       provider: 'local',
-      dimensions: 768
+      dimensions: 384
     });
 
     await client.execute({
@@ -64,7 +64,7 @@ describe('search', () => {
         client,
         query: 'static site building',
         limit: 5,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(results).toHaveLength(2);
@@ -96,7 +96,7 @@ describe('search', () => {
         client,
         query: 'JavaScript',
         limit: 2,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(results).toHaveLength(2);
@@ -119,7 +119,7 @@ describe('search', () => {
         client,
         query: 'TypeScript programming',
         limit: 5,
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(results[0].slug).toBe('exact-match');
@@ -137,7 +137,7 @@ describe('search', () => {
       const results = await search({
         client,
         query: 'article',
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(results[0].tags).toEqual(['tag1', 'tag2']);
@@ -147,7 +147,7 @@ describe('search', () => {
       const results = await search({
         client,
         query: 'anything',
-        embeddingOptions: { provider: 'local', dimensions: 768 }
+        embeddingOptions: { provider: 'local', dimensions: 384 }
       });
 
       expect(results).toEqual([]);

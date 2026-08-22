@@ -25,7 +25,6 @@ await indexContent({
   tableName: "articles",
   embeddingOptions: {
     provider: "local",
-    dimensions: 768,
   },
 });
 ```
@@ -34,6 +33,11 @@ That keeps the implementation simple, but it also means a failed rebuild can
 leave the index partially repopulated.
 
 Changing an embedding provider or dimension count requires a full re-embed.
+For existing local indexes created with the older padded-local behavior, create
+or recreate a 384-dimensional table before rebuilding. Those older local
+768-dimensional tables stored 384 model values followed by zero padding;
+`indexContent()` clears rows but does not change the table's `F32_BLOB` width.
+
 For Gemini specifically, indexes created with the retired `text-embedding-004`
 model must be rebuilt for `gemini-embedding-2` even when staying at 768
 dimensions, because the model and query/document formatting both changed. If
@@ -72,7 +76,7 @@ database calls or embedding generation.
 
 ## Runtime Notes
 
-- local embeddings may download a model on the first run
+- local embeddings may download and cache a model on the first run
 - Node users need `@libsql/client` installed alongside the package
 - the repository validates both the npm package build and `deno check`, but the
   indexing flow itself still depends on filesystem access

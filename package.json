@@ -26,11 +26,12 @@
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:release-plan": "node --test ./scripts/plan-release.node-test.mjs",
     "check:deno": "deno task check",
     "smoke:package": "node ./scripts/smoke-package.mjs",
     "validate:release-version": "node ./scripts/validate-release-version.mjs",
     "validate:package": "tsc --noEmit && rollup -c && rollup -c rollup.dts.config.js && node ./scripts/smoke-package.mjs",
-    "validate:release": "pnpm audit --audit-level moderate && pnpm test:coverage && pnpm validate:package && pnpm check:deno",
+    "validate:release": "pnpm audit --audit-level moderate && pnpm test:release-plan && pnpm test:coverage && pnpm validate:package && pnpm check:deno",
     "prepublishOnly": "pnpm validate:release"
   },
   "keywords": [

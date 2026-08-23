@@ -22,7 +22,7 @@ References:
 - if dimensions change, create a new table or recreate the old table, then fully re-embed
 - if dimensions stay the same but provider, model, endpoint, model revision, pooling, normalization, or input formatting changes, fully reindex anyway
 - never mix two embedding spaces in one table
-- prefer a parallel table migration because `indexContent()` clears rows first and is not transactional
+- prefer a parallel table migration because `indexContent()` replaces the whole target table, so an in-place rebuild leaves no way back to the old vectors
 
 In practice, this means:
 
@@ -38,6 +38,8 @@ In practice, this means:
 4. Run search quality checks against the new table.
 5. Switch application reads and writes to the new table.
 6. Retire the old table in a separate cleanup step.
+
+Step 3 is all or nothing. `indexContent()` throws `IndexingError` and leaves the target table untouched when a file or the replacement transaction fails, so a failed migration step can be retried without cleanup. See [Indexing and operational behavior](./INDEXING.md) for `failurePolicy` and `allowEmptyIndex`.
 
 Example:
 

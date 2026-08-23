@@ -30,8 +30,14 @@ export {
 export {
   indexContent,
   createTable,
+  IndexingError,
   type IndexerOptions,
-  type IndexedDocument
+  type IndexedDocument,
+  type IndexResult,
+  type IndexFailure,
+  type IndexFailurePolicy,
+  type IndexFailureStage,
+  type IndexingErrorPhase
 } from './indexer.js';
 
 // Export search utilities

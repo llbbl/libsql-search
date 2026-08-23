@@ -125,12 +125,18 @@ function smokeSource(moduleSyntax, expectedVersionPrefix) {
   const importBlock = moduleSyntax === 'esm'
     ? [
         `import * as libsqlSearch from 'libsql-search';`,
+        // The Turso entry point is resolved even though @tursodatabase/database
+        // is NOT installed in this consumer. That is the point: the subpath is
+        // declared as an optional peer, and nothing in it imports the native
+        // package, so requiring it must not drag one in.
+        `import { tursoAdapter } from 'libsql-search/turso';`,
         `import { createClient } from '@libsql/client';`,
         `import { readFileSync } from 'node:fs';`,
         `import { join } from 'node:path';`,
       ].join('\n')
     : [
         `const libsqlSearch = require('libsql-search');`,
+        `const { tursoAdapter } = require('libsql-search/turso');`,
         `const { createClient } = require('@libsql/client');`,
         `const { readFileSync } = require('node:fs');`,
         `const { join } = require('node:path');`,
@@ -235,7 +241,58 @@ async function verifyClientInterop() {
   }
 }
 
-verifyClientInterop().catch((error) => {
+/**
+ * Confirm the Turso subpath is usable from the packed tarball, without the
+ * native package installed and without a database of any kind.
+ *
+ * Two things are proven here that no other gate covers:
+ *
+ * 1. The subpath "libsql-search/turso" resolves in both module systems from the
+ *    published exports map, with @tursodatabase/database absent.
+ * 2. An adapter built by the SUBPATH bundle is accepted by createTable() from
+ *    the MAIN bundle. The two bundles each carry their own copy of the adapter
+ *    declaration, so this is the runtime half of the cross-entry compatibility
+ *    the type check covers separately.
+ */
+async function verifyTursoSubpath() {
+  if (typeof tursoAdapter !== 'function') {
+    throw new Error('Expected tursoAdapter to be a function on libsql-search/turso');
+  }
+
+  const ddl = [];
+  const adapter = tursoAdapter({
+    exec: async (sql) => {
+      ddl.push(sql);
+    },
+    prepare: () => ({
+      run: async () => ({ changes: 0 }),
+      all: async () => [],
+    }),
+  });
+
+  if (adapter.supportsVectorIndex !== false) {
+    throw new Error('Expected the Turso adapter to report no vector index support');
+  }
+
+  await libsqlSearch.createTable(adapter, 'articles', 384);
+
+  // Joined with a space rather than a newline: this source is itself built
+  // inside a template literal, and an escape here would be consumed a level too
+  // early.
+  const joined = ddl.join(' ');
+
+  if (joined.includes('libsql_vector_idx')) {
+    throw new Error('Expected createTable to skip the vector index on the Turso adapter');
+  }
+
+  for (const fragment of ['CREATE TABLE IF NOT EXISTS', 'articles_folder_idx', 'articles_slug_idx']) {
+    if (!joined.includes(fragment)) {
+      throw new Error(\`Expected createTable to emit \${fragment} on the Turso adapter\`);
+    }
+  }
+}
+
+verifyClientInterop().then(verifyTursoSubpath).catch((error) => {
   console.error(error);
   // Not process.exit(): the parent captures stdio through a pipe, and pipe
   // writes complete asynchronously, so exiting on the next tick can discard the

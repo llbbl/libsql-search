@@ -31,6 +31,8 @@ deno add jsr:@logan/libsql-search npm:@libsql/client@^0.17.0
 
 For npm usage, the package requires Node `>=22.12.0`.
 
+`@tursodatabase/database` is supported as an **optional** peer, behind the separate `libsql-search/turso` entry point. It is experimental and exact-search-only, because Turso Database has no ANN vector index. Nothing is installed or resolved for it unless you opt in — see the [Turso Database backend guide](./docs/TURSO.md).
+
 **On npm/pnpm**, the peer range is `@libsql/client ^0.15.0 || ^0.17.0`. Both lines are supported: every behavior this package depends on — `vector_top_k()`'s result shape, the vector index error wording that `search()` matches on, and transactional `batch()` rollback — is identical across them, so an existing `0.15.x` install does not have to move. There is no `0.16.x` line upstream, which is why the range is a disjunction rather than a span. The packaged build is smoke-tested against both arms on every release, at the newest release each arm admits (currently `0.15.15` and `0.17.4`).
 
 **On JSR/Deno the range does not apply to you.** `deno.json` declares no dependency on `@libsql/client` — this package imports only its *types* — so the client you `deno add` separately is constrained by nothing on our side, and a plain `deno add npm:@libsql/client` will silently take whatever is newest, including a future major we have never tested. Deno also cannot express our range: `npm:@libsql/client@^0.15.0 || ^0.17.0` is a parse error, as is any `>=`/`<` span. Pin an arm yourself instead:

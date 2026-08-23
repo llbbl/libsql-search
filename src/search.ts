@@ -2,8 +2,8 @@
  * Vector search functionality
  */
 
-import type { Client, ResultSet } from '@libsql/client';
 import { generateEmbedding, type EmbeddingOptions } from './embeddings.js';
+import { resolveDatabase, type DatabaseAdapter, type DatabaseClient } from './database.js';
 import {
   DEFAULT_SEARCH_CANDIDATE_MULTIPLIER,
   MAX_SEARCH_CANDIDATES,
@@ -21,7 +21,11 @@ export {
 };
 
 export interface SearchOptions {
-  client: Client;
+  /**
+   * A `@libsql/client` client, or an adapter from one of this package's
+   * backend entry points, such as `tursoAdapter()` from `libsql-search/turso`.
+   */
+  client: DatabaseClient;
   query: string;
   limit?: number;
   tableName?: string;
@@ -40,6 +44,10 @@ export interface SearchOptions {
   /**
    * Bypass the vector index and score every row instead. Exact but linear in
    * table size. Defaults to `false`.
+   *
+   * Backends with no vector index take this path whether or not it is set: on
+   * Turso Database `vector_top_k()` does not exist, so there is nothing to fall
+   * back from.
    */
   exact?: boolean;
 }
@@ -109,6 +117,10 @@ const NO_VECTOR_SUPPORT_PATTERNS = [
  * deterministic even though the candidate set is not.
  *
  * Pass `exact: true` for a guaranteed-exact full scan.
+ *
+ * On a backend with no ANN vector index — Turso Database, reached through
+ * `tursoAdapter()` — the exact path is the only path, and is selected
+ * automatically without `exact: true`.
  */
 export async function search(options: SearchOptions): Promise<SearchResult[]> {
   const {
@@ -120,6 +132,8 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
     candidates,
     exact = false
   } = options;
+
+  const database = resolveDatabase(client);
 
   // Every argument is validated before the embedding call so that bad input
   // fails without paying for a provider round trip
@@ -138,10 +152,15 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
   });
   const queryVector = JSON.stringify(queryEmbedding);
 
-  const results = exact
-    ? await executeExactSearch(client, quotedTableName, queryVector, resultLimit)
+  // A backend without `vector_top_k()` has no index path to choose, so it is
+  // routed to the exact scan rather than being allowed to fail on a query it
+  // could never have run.
+  const useExactSearch = exact || !database.supportsVectorIndex;
+
+  const rows = useExactSearch
+    ? await executeExactSearch(database, quotedTableName, queryVector, resultLimit)
     : await executeIndexSearch(
-        client,
+        database,
         quotedTableName,
         embeddingIndexName,
         queryVector,
@@ -149,7 +168,7 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
         resultLimit
       );
 
-  return results.rows.map(toSearchResult);
+  return rows.map(toSearchResult);
 }
 
 /**
@@ -160,16 +179,16 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
  * makes the result order reproducible when two rows share a distance.
  */
 async function executeIndexSearch(
-  client: Client,
+  database: DatabaseAdapter,
   quotedTableName: string,
   embeddingIndexName: string,
   queryVector: string,
   candidateCount: number,
   resultLimit: number
-): Promise<ResultSet> {
+): Promise<SearchRow[]> {
   try {
-    return await client.execute({
-      sql: `
+    return await database.executeQuery(
+      `
         SELECT
           ${RESULT_COLUMNS},
           vector_distance_cos(a.embedding, vector(:queryVector)) as distance
@@ -178,13 +197,13 @@ async function executeIndexSearch(
         ORDER BY distance, a.id
         LIMIT :resultLimit
       `,
-      args: {
+      {
         queryVector,
         indexName: embeddingIndexName,
         candidates: candidateCount,
         resultLimit
       }
-    });
+    );
   } catch (error) {
     throw wrapIndexPathError(error, embeddingIndexName);
   }
@@ -195,13 +214,13 @@ async function executeIndexSearch(
  * grows linearly with the table.
  */
 async function executeExactSearch(
-  client: Client,
+  database: DatabaseAdapter,
   quotedTableName: string,
   queryVector: string,
   resultLimit: number
-): Promise<ResultSet> {
-  return client.execute({
-    sql: `
+): Promise<SearchRow[]> {
+  return database.executeQuery(
+    `
       SELECT
         ${RESULT_COLUMNS},
         vector_distance_cos(a.embedding, vector(:queryVector)) as distance
@@ -210,8 +229,8 @@ async function executeExactSearch(
       ORDER BY distance, a.id
       LIMIT :resultLimit
     `,
-    args: { queryVector, resultLimit }
-  });
+    { queryVector, resultLimit }
+  );
 }
 
 /**
@@ -254,7 +273,10 @@ function wrapIndexPathError(error: unknown, embeddingIndexName: string): unknown
   return error;
 }
 
-function toSearchResult(row: ResultSet['rows'][number]): SearchResult {
+/** A row as either backend returns it: column name to value. */
+type SearchRow = Record<string, unknown>;
+
+function toSearchResult(row: SearchRow): SearchResult {
   return {
     id: row.id as number,
     slug: row.slug as string,
@@ -271,7 +293,7 @@ function toSearchResult(row: ResultSet['rows'][number]): SearchResult {
  * Get all articles (for building static pages, navigation, etc.)
  */
 export async function getAllArticles(
-  client: Client,
+  client: DatabaseClient,
   tableName: string = 'articles'
 ): Promise<Array<{
   id: number;
@@ -282,14 +304,15 @@ export async function getAllArticles(
   created_at: string;
   updated_at: string;
 }>> {
+  const database = resolveDatabase(client);
   const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
-  const results = await client.execute(`
+  const rows = await database.executeQuery(`
     SELECT id, slug, title, folder, tags, created_at, updated_at
     FROM ${quotedTableName}
     ORDER BY title
   `);
 
-  return results.rows.map(row => ({
+  return rows.map(row => ({
     id: row.id as number,
     slug: row.slug as string,
     title: row.title as string,
@@ -304,7 +327,7 @@ export async function getAllArticles(
  * Get a single article by slug
  */
 export async function getArticleBySlug(
-  client: Client,
+  client: DatabaseClient,
   slug: string,
   tableName: string = 'articles'
 ): Promise<{
@@ -317,22 +340,23 @@ export async function getArticleBySlug(
   created_at: string;
   updated_at: string;
 } | null> {
+  const database = resolveDatabase(client);
   const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
-  const results = await client.execute({
-    sql: `
+  const rows = await database.executeQuery(
+    `
       SELECT id, slug, title, content, folder, tags, created_at, updated_at
       FROM ${quotedTableName}
       WHERE slug = ?
       LIMIT 1
     `,
-    args: [slug]
-  });
+    [slug]
+  );
 
-  if (results.rows.length === 0) {
+  if (rows.length === 0) {
     return null;
   }
 
-  const row = results.rows[0];
+  const row = rows[0];
   return {
     id: row.id as number,
     slug: row.slug as string,
@@ -349,7 +373,7 @@ export async function getArticleBySlug(
  * Get articles by folder
  */
 export async function getArticlesByFolder(
-  client: Client,
+  client: DatabaseClient,
   folder: string,
   tableName: string = 'articles'
 ): Promise<Array<{
@@ -359,18 +383,19 @@ export async function getArticlesByFolder(
   folder: string;
   tags: string[];
 }>> {
+  const database = resolveDatabase(client);
   const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
-  const results = await client.execute({
-    sql: `
+  const rows = await database.executeQuery(
+    `
       SELECT id, slug, title, folder, tags
       FROM ${quotedTableName}
       WHERE folder = ?
       ORDER BY title
     `,
-    args: [folder]
-  });
+    [folder]
+  );
 
-  return results.rows.map(row => ({
+  return rows.map(row => ({
     id: row.id as number,
     slug: row.slug as string,
     title: row.title as string,
@@ -383,15 +408,16 @@ export async function getArticlesByFolder(
  * Get all unique folders
  */
 export async function getFolders(
-  client: Client,
+  client: DatabaseClient,
   tableName: string = 'articles'
 ): Promise<string[]> {
+  const database = resolveDatabase(client);
   const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
-  const results = await client.execute(`
+  const rows = await database.executeQuery(`
     SELECT DISTINCT folder
     FROM ${quotedTableName}
     ORDER BY folder
   `);
 
-  return results.rows.map(row => row.folder as string);
+  return rows.map(row => row.folder as string);
 }

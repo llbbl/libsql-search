@@ -52,6 +52,25 @@ It also exports these types:
 - [Migration and reindexing guide](./MIGRATIONS.md)
 - [Indexing and operational behavior](./INDEXING.md)
 - [Testing guidance](./TESTING.md)
+- [Turso Database backend](./TURSO.md)
+
+## The `client` argument
+
+Every function that talks to a database takes a `client`. It accepts either:
+
+- a `@libsql/client` `Client` — the default, and the only backend the main entry point references, or
+- an adapter from a backend entry point, currently `tursoAdapter()` from `libsql-search/turso`
+
+`IndexerOptions["client"]` and `SearchOptions["client"]` are typed as
+`Client | DatabaseAdapter`, so existing `Client`-typed code needs no change. The
+main entry point exports no new symbol for this and never imports a backend
+package other than `@libsql/client`.
+
+The adapter carries a capability flag that changes two behaviors on a backend
+without an approximate-nearest-neighbor vector index: `createTable()` skips the
+vector index, and `search()` uses the exact path automatically. Both are
+described in the [Turso Database backend guide](./TURSO.md), which is currently
+the only backend where they apply.
 
 ## `createTable(client, tableName?, dimensions?)`
 
@@ -60,6 +79,10 @@ Creates the search table and supporting indexes.
 ```ts
 await createTable(client);
 ```
+
+On a backend with no vector index support, the `<tableName>_embedding_idx`
+vector index is skipped; the table, the folder index, and the slug index are
+still created. On `@libsql/client` it is never skipped.
 
 Defaults:
 
@@ -88,7 +111,7 @@ Indexes Markdown files from a directory on disk.
 
 ```ts
 interface IndexerOptions {
-  client: Client;
+  client: Client | DatabaseAdapter;
   contentPath: string;
   embeddingOptions?: EmbeddingOptions;
   fileExtensions?: string[];
@@ -185,7 +208,7 @@ Generates a query embedding and performs vector similarity search.
 
 ```ts
 interface SearchOptions {
-  client: Client;
+  client: Client | DatabaseAdapter;
   query: string;
   limit?: number;
   tableName?: string;
@@ -244,6 +267,8 @@ const results = await search({ client, query, exact: true });
 
 This is the guaranteed-exact path: it computes `vector_distance_cos` for every row with a non-`NULL` embedding, sorts by `(distance, id)`, and trims to `limit`. Cost grows linearly with table size, so it is intended for small corpora, correctness checks against the index path, and tables that have no vector index.
 
+A backend with no vector index at all takes this path whether or not `exact` is set, because there is no index path for it to fall back from. That is the case for `@tursodatabase/database`; see the [Turso Database backend guide](./TURSO.md).
+
 ### Missing Vector Index
 
 If the target table has no `<tableName>_embedding_idx`, the default path throws an error naming the missing index and pointing at `createTable()` and `exact: true`. libSQL's own message for this case ("failed to parse vector index parameters") says nothing about a missing index, so it is preserved as the thrown error's `cause` rather than surfaced directly.
@@ -297,7 +322,7 @@ Returns articles in a specific folder.
 
 Returns distinct folder names from the index.
 
-All retrieval helpers validate `tableName` before executing SQL.
+All retrieval helpers validate `tableName` before executing SQL, and all of them accept either client kind.
 
 ## Embedding Helpers
 

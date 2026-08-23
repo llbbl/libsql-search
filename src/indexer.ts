@@ -5,9 +5,9 @@
 import { readdir, readFile } from 'fs/promises';
 import { join, relative, dirname, extname } from 'path';
 import matter from 'gray-matter';
-import type { Client, InStatement } from '@libsql/client';
 import { generateEmbedding, prepareTextForEmbedding, type EmbeddingOptions } from './embeddings.js';
 import { normalizeVectorDimensions, quoteSqlIdentifier } from './sql.js';
+import { resolveDatabase, type DatabaseAdapter, type DatabaseClient } from './database.js';
 
 /**
  * How build-phase failures are handled.
@@ -36,7 +36,11 @@ export interface IndexFailure {
 }
 
 export interface IndexerOptions {
-  client: Client;
+  /**
+   * A `@libsql/client` client, or an adapter from one of this package's
+   * backend entry points, such as `tursoAdapter()` from `libsql-search/turso`.
+   */
+  client: DatabaseClient;
   contentPath: string;
   embeddingOptions?: EmbeddingOptions;
   fileExtensions?: string[];
@@ -135,6 +139,7 @@ export async function indexContent(options: IndexerOptions): Promise<IndexResult
     failurePolicy = 'abort',
     allowEmptyIndex = false
   } = options;
+  const database = resolveDatabase(client);
   const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
 
   // Find all content files, in a deterministic order so that slug collisions
@@ -237,7 +242,7 @@ export async function indexContent(options: IndexerOptions): Promise<IndexResult
 
   // Replace phase: a single transaction, all or nothing. `documents` is
   // consumed here, so read anything needed from it before this call.
-  await replaceIndex(client, quotedTableName, documents, failures);
+  await replaceIndex(database, quotedTableName, documents, failures);
 
   return {
     success,
@@ -426,23 +431,25 @@ function describeType(value: unknown): string {
 /**
  * Replace the whole table in one write transaction.
  *
- * `batch()` wraps its statements in a transaction and rolls the whole group
- * back if any statement fails, so the table either holds the new document set
- * or is left exactly as it was. Unlike `transaction()`, it also works with
- * in-memory clients, which drop their connection when a transaction is opened.
+ * The adapter decides how that transaction is expressed, because the backends
+ * disagree about which primitive is atomic: `@libsql/client` uses
+ * `batch(statements, 'write')`, while Turso Database's `batch()` is not
+ * transactional and its adapter uses an explicit transaction instead. Either
+ * way the table ends up holding the new document set or is left exactly as it
+ * was.
  *
  * `documents` is consumed: each document is released as its statement is built,
  * so the embedding arrays are collectable instead of being held alongside the
- * statements. Peak memory still covers the whole corpus, and the batch is a
+ * statements. Peak memory still covers the whole corpus, and the write is a
  * single request for remote clients.
  */
 async function replaceIndex(
-  client: Client,
+  database: DatabaseAdapter,
   quotedTableName: string,
   documents: Array<BuiltDocument | undefined>,
   failures: IndexFailure[]
 ): Promise<void> {
-  const statements: InStatement[] = [`DELETE FROM ${quotedTableName}`];
+  const statements: IndexStatement[] = [{ sql: `DELETE FROM ${quotedTableName}` }];
 
   try {
     for (let i = 0; i < documents.length; i++) {
@@ -460,7 +467,7 @@ async function replaceIndex(
   }
 
   try {
-    await client.batch(statements, 'write');
+    await database.executeAtomicWrite(statements);
   } catch (error) {
     throw new IndexingError(
       `Failed to replace the contents of ${quotedTableName}. The transaction was rolled back ` +
@@ -473,12 +480,25 @@ async function replaceIndex(
 }
 
 /**
+ * One statement in the replacement transaction.
+ *
+ * Narrower than any backend's own statement type, so the adapter can translate
+ * it for either of them, but the bind values are still typed: an `unknown[]`
+ * here would silently accept a value no SQLite driver can store and defer the
+ * failure to bind time, inside the replacement transaction.
+ */
+interface IndexStatement {
+  sql: string;
+  args?: Array<string | number | bigint | Uint8Array | null>;
+}
+
+/**
  * Build the insert statement for one document
  */
 function createInsertStatement(
   document: BuiltDocument,
   quotedTableName: string
-): InStatement {
+): IndexStatement {
   return {
     sql: `INSERT INTO ${quotedTableName}
           (slug, title, content, folder, tags, embedding, created_at, updated_at)
@@ -499,20 +519,26 @@ function toError(error: unknown): Error {
 }
 
 /**
- * Create the articles table if it doesn't exist
+ * Create the articles table if it doesn't exist.
+ *
+ * Creates the table, the vector index, the folder index, and the slug index.
+ * The vector index is created only on backends that support
+ * `libsql_vector_idx()`; on Turso Database, which does not, everything else is
+ * still created and `search()` falls back to the exact full scan.
  */
 export async function createTable(
-  client: Client,
+  client: DatabaseClient,
   tableName: string = 'articles',
   dimensions: number = 384
 ): Promise<void> {
+  const database = resolveDatabase(client);
   const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
   const vectorDimensions = normalizeVectorDimensions(dimensions);
   const quotedEmbeddingIndexName = quoteSqlIdentifier(`${tableName}_embedding_idx`, 'embedding index name');
   const quotedFolderIndexName = quoteSqlIdentifier(`${tableName}_folder_idx`, 'folder index name');
   const quotedSlugIndexName = quoteSqlIdentifier(`${tableName}_slug_idx`, 'slug index name');
 
-  await client.execute(`
+  await database.executeDdl(`
     CREATE TABLE IF NOT EXISTS ${quotedTableName} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       slug TEXT UNIQUE NOT NULL,
@@ -526,17 +552,24 @@ export async function createTable(
     )
   `);
 
-  await client.execute(`
-    CREATE INDEX IF NOT EXISTS ${quotedEmbeddingIndexName}
-    ON ${quotedTableName}(libsql_vector_idx(embedding))
-  `);
+  // Backends without an approximate-nearest-neighbor index cannot parse this
+  // statement at all, so it is skipped there rather than attempted and caught.
+  // The skip is driven by the adapter's capability flag, never by swallowing an
+  // error: on libSQL, where the index is what makes the default search path
+  // work, a failure here must still surface.
+  if (database.supportsVectorIndex) {
+    await database.executeDdl(`
+      CREATE INDEX IF NOT EXISTS ${quotedEmbeddingIndexName}
+      ON ${quotedTableName}(libsql_vector_idx(embedding))
+    `);
+  }
 
-  await client.execute(`
+  await database.executeDdl(`
     CREATE INDEX IF NOT EXISTS ${quotedFolderIndexName}
     ON ${quotedTableName}(folder)
   `);
 
-  await client.execute(`
+  await database.executeDdl(`
     CREATE INDEX IF NOT EXISTS ${quotedSlugIndexName}
     ON ${quotedTableName}(slug)
   `);

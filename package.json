@@ -11,6 +11,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.esm.js",
       "require": "./dist/index.cjs"
+    },
+    "./turso": {
+      "types": "./dist/turso.d.ts",
+      "import": "./dist/turso.esm.js",
+      "require": "./dist/turso.cjs"
     }
   },
   "files": [
@@ -29,9 +34,10 @@
     "test:coverage": "vitest run --coverage",
     "test:release-plan": "node --test ./scripts/plan-release.node-test.mjs",
     "check:deno": "deno task check",
+    "check:dist-types": "node ./scripts/check-dist-types.mjs",
     "smoke:package": "node ./scripts/smoke-package.mjs",
     "validate:release-version": "node ./scripts/validate-release-version.mjs",
-    "validate:package": "tsc --noEmit && rollup -c && rollup -c rollup.dts.config.js && node ./scripts/smoke-package.mjs",
+    "validate:package": "tsc --noEmit && rollup -c && rollup -c rollup.dts.config.js && node ./scripts/check-dist-types.mjs && node ./scripts/smoke-package.mjs",
     "validate:release": "pnpm audit --audit-level moderate && pnpm test:release-plan && pnpm test:coverage && pnpm validate:package && pnpm check:deno",
     "prepublishOnly": "pnpm validate:release"
   },
@@ -60,7 +66,13 @@
     "node": ">=22.12.0"
   },
   "peerDependencies": {
-    "@libsql/client": "^0.15.0 || ^0.17.0"
+    "@libsql/client": "^0.15.0 || ^0.17.0",
+    "@tursodatabase/database": "^0.7.0 || ^0.8.0"
+  },
+  "peerDependenciesMeta": {
+    "@tursodatabase/database": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
@@ -70,6 +82,7 @@
     "@libsql/client": "^0.17.4",
     "@rollup/plugin-commonjs": "^29.0.3",
     "@rollup/plugin-node-resolve": "^16.0.3",
+    "@tursodatabase/database": "^0.7.2",
     "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "4.1.11",
     "@vitest/ui": "^4.1.11",

@@ -18,6 +18,7 @@
 - `validateEmbeddingBatch`
 - `padEmbedding`
 - `prepareTextForEmbedding`
+- `IndexingError`
 
 It also exports these types:
 
@@ -34,6 +35,11 @@ It also exports these types:
 - `EmbeddingOptions`
 - `IndexerOptions`
 - `IndexedDocument`
+- `IndexResult`
+- `IndexFailure`
+- `IndexFailurePolicy`
+- `IndexFailureStage`
+- `IndexingErrorPhase`
 - `SearchOptions`
 - `SearchResult`
 
@@ -86,6 +92,8 @@ interface IndexerOptions {
   exclude?: string[];
   tableName?: string;
   onProgress?: (current: number, total: number, file: string) => void;
+  failurePolicy?: "abort" | "skip";
+  allowEmptyIndex?: boolean;
 }
 ```
 
@@ -94,24 +102,79 @@ Defaults:
 - `fileExtensions`: [".md", ".markdown"]
 - `exclude`: ["node_modules", ".git", "dist", "build"]
 - `tableName`: `"articles"`
+- `failurePolicy`: `"abort"`
+- `allowEmptyIndex`: `false`
 
 Return shape:
 
 ```ts
-{
-  success: number;
-  failed: number;
-  total: number;
+interface IndexResult {
+  success: number;   // documents written
+  failed: number;    // files that could not be indexed
+  total: number;     // files discovered on disk
+  replaced: boolean; // whether table contents were replaced by this call
+  partial: boolean;  // replaced, but some files were skipped
+  failures: IndexFailure[];
+}
+
+interface IndexFailure {
+  file: string;                        // path relative to contentPath
+  stage: "read" | "parse" | "embed";
+  error: Error;
 }
 ```
 
 Behavior notes:
 
-- `indexContent()` deletes existing rows in the target table before rebuilding
-- rebuilds are not transactional
+- every file is read, parsed, and embedded in memory before any database state changes
+- the target table is then replaced in a single write transaction, so a failed rebuild leaves the previous index exactly as it was
+- that costs peak memory proportional to the whole corpus, and against remote clients the replacement travels as a single un-chunked batch request; see [Costs of the two-phase rebuild](./INDEXING.md#costs-of-the-two-phase-rebuild) before rebuilding a very large corpus in place
+- files are discovered and indexed in sorted path order
+- frontmatter `title` must be a scalar; a structured title such as a YAML list fails the file at the `parse` stage
+- two files that reduce to the same slug (`foo.md` and `foo.markdown`) collide: the first in sorted path order keeps the slug and the later file is reported as a `parse` failure
+- `failurePolicy: "abort"` throws `IndexingError` on the first file that fails
+- `failurePolicy: "skip"` drops the failing file, records it in `failures`, and rebuilds from the survivors, returning `partial: true`
+- under `"skip"`, if every discovered file fails, the rebuild throws instead of replacing a valid index with an empty one
+- an empty source directory throws unless `allowEmptyIndex: true`, which intentionally empties the index
+- `onProgress` is called once per file during the build phase
 - frontmatter `title`, `description`, and `tags` are folded into the embedding text
 - embeddings default to `intent: "document"` unless `embeddingOptions.intent` is set explicitly
 - if a file has no frontmatter title, the filename becomes the title
+
+### `IndexingError`
+
+Thrown when a rebuild cannot complete. The previously indexed rows are always left unchanged.
+
+```ts
+class IndexingError extends Error {
+  readonly phase: "build" | "replace";
+  readonly failures: IndexFailure[];
+}
+```
+
+- `phase: "build"` means the failure happened before any database work: a file failed, every file failed, the source directory was empty, or it could not be scanned
+- `phase: "replace"` means the replacement transaction failed and was rolled back
+- `cause` carries the underlying error
+- on a `phase: "replace"` error, `failures` lists files skipped during the build phase. They are not the cause of the rollback, which is carried by `cause`
+
+```ts
+import { indexContent, IndexingError } from "libsql-search";
+
+try {
+  await indexContent({ client, contentPath: "./content" });
+} catch (error) {
+  if (error instanceof IndexingError) {
+    console.error(error.phase, error.failures);
+  }
+
+  throw error;
+}
+```
+
+Breaking changes in this behavior:
+
+- partial failures previously counted into `failed` and still replaced the table; they now throw. Pass `failurePolicy: "skip"` for the previous lenient behavior.
+- an empty source directory previously returned zeros and left stale rows in place; it now throws. Pass `allowEmptyIndex: true` to intentionally empty the index.
 
 ## `search(options)`
 

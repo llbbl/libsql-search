@@ -29,7 +29,8 @@ describe('SQL input security', () => {
 
   function createMockClient(): Client {
     return {
-      execute: vi.fn(async () => ({ rows: [] }))
+      execute: vi.fn(async () => ({ rows: [] })),
+      batch: vi.fn(async () => [])
     } as unknown as Client;
   }
 
@@ -99,6 +100,7 @@ describe('SQL input security', () => {
     })).rejects.toThrow('Invalid SQL tableName');
 
     expect(client.execute).not.toHaveBeenCalled();
+    expect(client.batch).not.toHaveBeenCalled();
     expect(generateEmbedding).not.toHaveBeenCalled();
   });
 

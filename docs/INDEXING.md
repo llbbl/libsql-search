@@ -15,7 +15,7 @@ The slug is derived from the file path relative to `contentPath`.
 
 ## Rebuild Behavior
 
-`indexContent()` clears the target table before rebuilding:
+`indexContent()` replaces the whole target table:
 
 ```ts
 await indexContent({
@@ -28,13 +28,88 @@ await indexContent({
 });
 ```
 
-That keeps the implementation simple, but it also means:
+The rebuild runs in two phases:
 
-- failed rebuilds can leave the table partially repopulated
-- provider or dimension changes should use a parallel table migration
+1. build: every file is read, parsed, and embedded in memory, touching no database state
+2. replace: the delete and all inserts run in a single write transaction
+
+That means:
+
+- a failed rebuild leaves the previously indexed rows exactly as they were
+- provider or dimension changes should still use a parallel table migration
 - `createTable()` does not resize an existing vector column
 
+Files are discovered and indexed in sorted path order, so a rebuild is deterministic.
+
 If provider, dimensions, model, endpoint, or embedding-space assumptions change, fully reindex into a new table. See the canonical [Migration and reindexing guide](./MIGRATIONS.md).
+
+### Costs Of The Two-Phase Rebuild
+
+Atomicity is not free, and both costs scale with corpus size:
+
+- **Peak memory holds the whole corpus.** The build phase keeps every document in memory: content, frontmatter, and one embedding array per document. The replace phase then builds insert statements including a JSON copy of each embedding, roughly 5-8 KB per document at 384 dimensions and considerably more at 3072. Documents are released as their statements are built, but peak usage is still proportional to the entire corpus rather than to one file.
+- **Remote clients send one request.** Against Turso or any remote client, the delete and every insert travel as a single batch. There is no chunking fallback, because splitting the batch would give up the atomicity this design exists to provide. A corpus large enough to exceed a remote request-size limit fails as an opaque `phase: "replace"` error.
+
+For very large corpora, index into a parallel table and switch reads over once it validates, rather than rebuilding a live table in place. See the [Migration and reindexing guide](./MIGRATIONS.md).
+
+## Content Requirements
+
+Two authoring mistakes fail a file at the `parse` stage rather than corrupting the rebuild:
+
+- **Frontmatter `title` must be a scalar.** Strings, numbers, booleans, and dates are accepted; dates are stored as ISO strings. A structured title such as a YAML list fails the file. A missing or empty title still falls back to the filename.
+- **Slugs must be unique.** The slug comes from the path with the extension removed, so `foo.md` and `foo.markdown` collide. Files are processed in sorted path order and the first file to claim a slug keeps it, so `foo.markdown` wins and `foo.md` is reported as the failure.
+
+Both are governed by `failurePolicy` like any other build failure, so they abort by default and are skippable.
+
+## Failure Handling
+
+`indexContent()` throws `IndexingError` instead of reporting a partially applied rebuild. The error carries `phase` (`"build"` or `"replace"`), a `failures` array, and the underlying error as `cause`.
+
+```ts
+import { indexContent, IndexingError } from "libsql-search";
+
+try {
+  await indexContent({ client, contentPath: "./content" });
+} catch (error) {
+  if (error instanceof IndexingError) {
+    for (const failure of error.failures) {
+      console.error(`${failure.file} failed during ${failure.stage}`);
+    }
+  }
+
+  throw error;
+}
+```
+
+By default one bad file aborts the whole rebuild. To index everything that can be indexed, opt into `failurePolicy: "skip"`:
+
+```ts
+const result = await indexContent({
+  client,
+  contentPath: "./content",
+  failurePolicy: "skip",
+});
+
+if (result.partial) {
+  console.warn(`Indexed ${result.success} of ${result.total} files`);
+}
+```
+
+Skipped rebuilds still replace the table, so treat `partial: true` as a build warning rather than a clean rebuild. If every discovered file fails, the rebuild throws rather than trading a valid index for an empty one.
+
+## Empty Source Directories
+
+An empty source directory throws by default, because silently leaving stale rows in place serves search traffic from content that no longer exists. Emptying an index has to be intentional:
+
+```ts
+await indexContent({
+  client,
+  contentPath: "./content",
+  allowEmptyIndex: true,
+});
+```
+
+Both behaviors changed in a breaking way: partial failures used to be counted and reported, and an empty directory used to return zeros without clearing the table.
 
 ## Quality Guidelines
 

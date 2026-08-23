@@ -76,7 +76,9 @@ Important behavior:
 
 - Call `createTable()` before indexing or searching.
 - Keep table width, provider, and dimensions aligned across create/index/query.
-- `indexContent()` clears existing rows before rebuilding and is not transactional.
+- `indexContent()` embeds every document before it touches the database, then replaces the table in one transaction, so a failed rebuild leaves the previous index intact.
+- `indexContent()` throws `IndexingError` when a file fails; pass `failurePolicy: "skip"` to rebuild from the remaining files.
+- `indexContent()` throws `IndexingError` when no source files are found; pass `allowEmptyIndex: true` to intentionally empty the index.
 - Hosted providers send indexed and queried text to external services and may incur provider charges.
 
 ## Providers

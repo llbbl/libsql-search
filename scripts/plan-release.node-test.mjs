@@ -118,6 +118,21 @@ test('collectPlan releases eligible code when ignored docs-only commit is HEAD',
   });
 });
 
+test('collectPlan plans a 0.x minor bump for a breaking commit reaching the planner through git', () => {
+  const { repo, run } = createTempRepo();
+  writeFileSync(join(repo, 'src.ts'), 'export const value = 1;\n');
+  run(['add', '.']);
+  run(['commit', '-m', 'fix!: drop the legacy provider option']);
+
+  withCwd(repo, () => {
+    const plan = collectPlan();
+
+    assert.equal(plan.bump, 'major');
+    assert.equal(plan.version, '0.2.0');
+    assert.equal(plan.tag, 'v0.2.0');
+  });
+});
+
 test('detectBump handles breaking changes, features, and patch fallback', () => {
   assert.equal(detectBump('chore!: drop old Node support'), 'major');
   assert.equal(detectBump('fix: adjust output\n\nBREAKING CHANGE: output is stricter'), 'major');
@@ -129,6 +144,25 @@ test('incrementVersion applies semver bumps', () => {
   assert.equal(incrementVersion('1.2.3', 'major'), '2.0.0');
   assert.equal(incrementVersion('1.2.3', 'minor'), '1.3.0');
   assert.equal(incrementVersion('1.2.3', 'patch'), '1.2.4');
+});
+
+test('incrementVersion keeps major bumps on the 0.x line as minor bumps', () => {
+  assert.equal(incrementVersion('0.7.1', 'major'), '0.8.0');
+  assert.equal(incrementVersion('0.0.5', 'major'), '0.1.0');
+  assert.equal(incrementVersion('0.0.0', 'major'), '0.1.0');
+});
+
+test('incrementVersion leaves major bumps alone once the package is 1.x or higher', () => {
+  assert.equal(incrementVersion('1.0.0', 'major'), '2.0.0');
+  assert.equal(incrementVersion('1.2.3', 'major'), '2.0.0');
+  assert.equal(incrementVersion('10.4.2', 'major'), '11.0.0');
+});
+
+test('incrementVersion leaves minor and patch bumps unchanged on the 0.x line', () => {
+  assert.equal(incrementVersion('0.7.1', 'minor'), '0.8.0');
+  assert.equal(incrementVersion('0.7.1', 'patch'), '0.7.2');
+  assert.equal(incrementVersion('0.0.0', 'minor'), '0.1.0');
+  assert.equal(incrementVersion('0.0.0', 'patch'), '0.0.1');
 });
 
 test('planRelease uses the already synchronized manifest version for bootstrap patch', () => {
@@ -162,6 +196,55 @@ test('planRelease bumps beyond manifest version when commits require it', () => 
 
   assert.equal(plan.version, '0.2.0');
   assert.equal(plan.needsVersionCommit, true);
+});
+
+test('planRelease plans a 0.x minor bump for a breaking commit instead of 1.0.0', () => {
+  assert.deepEqual(
+    planRelease({
+      tags: ['v0.7.1'],
+      commitCount: 1,
+      commitsText: 'fix!: drop the legacy provider option',
+      manifestVersion: '0.7.1',
+    }),
+    {
+      shouldRelease: true,
+      reason: 'Selected 0.8.0 from 1 commit(s) after v0.7.1.',
+      latestTag: 'v0.7.1',
+      latestVersion: '0.7.1',
+      bump: 'major',
+      version: '0.8.0',
+      tag: 'v0.8.0',
+      needsVersionCommit: true,
+    },
+  );
+});
+
+test('planRelease still plans a real major bump for a breaking commit on 1.x', () => {
+  const plan = planRelease({
+    tags: ['v1.2.3'],
+    commitCount: 1,
+    commitsText: 'fix!: drop the legacy provider option',
+    manifestVersion: '1.2.3',
+  });
+
+  assert.equal(plan.bump, 'major');
+  assert.equal(plan.version, '2.0.0');
+  assert.equal(plan.tag, 'v2.0.0');
+});
+
+test('planRelease lets an ahead-of-tag manifest override the 0.x guard for a deliberate 1.0.0 promotion', () => {
+  const plan = planRelease({
+    tags: ['v0.7.1'],
+    commitCount: 1,
+    commitsText: 'fix!: drop the legacy provider option',
+    manifestVersion: '1.0.0',
+  });
+
+  // The 0.x guard constrains the COMPUTED version only. Hand-setting the
+  // manifests ahead of the latest tag is the intentional, reviewed escape
+  // hatch for promoting off the 0.x line.
+  assert.equal(plan.version, '1.0.0');
+  assert.equal(plan.needsVersionCommit, false);
 });
 
 test('planRelease returns no-op when there are no commits after latest tag', () => {

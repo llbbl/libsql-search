@@ -19,11 +19,19 @@ and JSR, then creates GitHub Release notes after both registries succeed.
    `.github/**` do not count as release-eligible and do not affect the bump. If
    the newest `main` commit is docs-only but an earlier untagged code or README
    commit is still pending, that newest run releases the accumulated eligible
-   changes. Breaking changes bump major, `feat:` bumps minor, and all other
-   eligible commits bump patch.
+   changes. `feat:` bumps minor and all other eligible commits bump patch.
+   Breaking changes (a `subject!:` prefix or a `BREAKING CHANGE:` footer) bump
+   major only once the package is `1.0.0` or higher. While the package is still
+   on the `0.x` line a breaking change bumps the minor instead, so an unattended
+   `fix!:` cannot auto-promote the package to `1.0.0`. Promoting off `0.x` is
+   deliberate and manual: see step 5.
 5. `package.json`, `jsr.json`, and `deno.json` are synchronized to the chosen
    version. If they already match the chosen version, no release commit is
-   created.
+   created. A manifest version that is already ahead of the latest tag wins over
+   the computed bump; this is the supported escape hatch for a deliberate
+   version jump, including promoting off the `0.x` line. Set all three manifests
+   to `1.0.0` on a reviewed PR and the next qualifying release publishes
+   `v1.0.0`.
 6. The workflow validates the candidate, creates an annotated tag, and atomically
    pushes the release commit plus tag.
 7. npm publishes `libsql-search` through trusted publishing OIDC with the GitHub

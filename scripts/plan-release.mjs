@@ -66,10 +66,20 @@ export function detectBump(commitsText) {
   return 'patch';
 }
 
+/**
+ * Release-policy version arithmetic — NOT plain semver.
+ * On the 0.x line a breaking change bumps the minor, not the major, so an
+ * unattended `fix!:` can never auto-promote the package to 1.0.0.
+ */
 export function incrementVersion(version, bump) {
   const parsed = parseVersion(version);
 
   if (bump === 'major') {
+    // On the 0.x line a breaking change conventionally bumps the minor, not the major.
+    if (parsed.major === 0) {
+      return `0.${parsed.minor + 1}.0`;
+    }
+
     return `${parsed.major + 1}.0.0`;
   }
 
@@ -115,6 +125,8 @@ export function planRelease({ tags, commitCount, commitsText, manifestVersion })
   const parsedLatest = parseVersion(latest.version);
   let version = bumpedVersion;
 
+  // A manifest ahead of the latest tag wins: this is the reviewed escape hatch
+  // for a deliberate version jump, including promoting off the 0.x line.
   if (compareVersions(parsedManifest, parsedLatest) > 0 && compareVersions(parsedManifest, parsedBumped) >= 0) {
     version = manifestVersion;
   }

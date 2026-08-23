@@ -74,12 +74,32 @@ console.log(results.map((result) => ({
 
 Important behavior:
 
-- Call `createTable()` before indexing or searching.
+- Call `createTable()` before indexing or searching. It creates the `<tableName>_embedding_idx` vector index that `search()` needs.
 - Keep table width, provider, and dimensions aligned across create/index/query.
 - `indexContent()` embeds every document before it touches the database, then replaces the table in one transaction, so a failed rebuild leaves the previous index intact.
 - `indexContent()` throws `IndexingError` when a file fails; pass `failurePolicy: "skip"` to rebuild from the remaining files.
 - `indexContent()` throws `IndexingError` when no source files are found; pass `allowEmptyIndex: true` to intentionally empty the index.
 - Hosted providers send indexed and queried text to external services and may incur provider charges.
+
+## Search Accuracy And Performance
+
+`search()` queries the `<tableName>_embedding_idx` vector index through libSQL's `vector_top_k()`. It does not score every row, so query cost no longer grows linearly with the size of the index.
+
+That index is an approximate-nearest-neighbor structure, so **the default search path is approximate and can miss a true nearest neighbor.** To limit the loss, `search()` over-fetches candidates from the index, recomputes the true cosine distance for each, and orders exactly by `(distance, id)` before trimming to `limit`. Distances on returned rows are always exact, and result ordering is fully deterministic — including when two rows tie — even though the index's own candidate order is not.
+
+Two options control the trade-off:
+
+```ts
+// Widen the index probe to raise recall (default: max(limit * 4, 32))
+await search({ client, query, limit: 10, candidates: 200 });
+
+// Bypass the index entirely: exact, but linear in table size
+await search({ client, query, exact: true });
+```
+
+`exact: true` is the only way to guarantee exactness. Use it for small corpora, for correctness checks against the index path, and for tables that have no vector index.
+
+Requirements: `vector_top_k()` and `libsql_vector_idx()` need a libSQL build with native vector support. The peer dependency is `@libsql/client ^0.15.0`, verified against `0.15.15`; remote Turso/libSQL servers must support vector indexes as well. See the [API reference](./docs/API.md#searchoptions) for full semantics, and [Indexing and operations](./docs/INDEXING.md) for tables created before the index existed.
 
 ## Providers
 

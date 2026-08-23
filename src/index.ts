@@ -47,6 +47,9 @@ export {
   getArticleBySlug,
   getArticlesByFolder,
   getFolders,
+  DEFAULT_SEARCH_CANDIDATE_MULTIPLIER,
+  MIN_SEARCH_CANDIDATES,
+  MAX_SEARCH_CANDIDATES,
   type SearchOptions,
   type SearchResult
 } from './search.js';

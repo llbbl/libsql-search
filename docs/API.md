@@ -19,6 +19,9 @@
 - `padEmbedding`
 - `prepareTextForEmbedding`
 - `IndexingError`
+- `DEFAULT_SEARCH_CANDIDATE_MULTIPLIER`
+- `MIN_SEARCH_CANDIDATES`
+- `MAX_SEARCH_CANDIDATES`
 
 It also exports these types:
 
@@ -187,6 +190,8 @@ interface SearchOptions {
   limit?: number;
   tableName?: string;
   embeddingOptions?: EmbeddingOptions;
+  candidates?: number;
+  exact?: boolean;
 }
 ```
 
@@ -194,8 +199,64 @@ Defaults:
 
 - `limit`: `10`
 - `tableName`: `"articles"`
+- `candidates`: `Math.max(limit * 4, 32)`
+- `exact`: `false`
 
 `limit` must be an integer from `1` through `100`; invalid values are rejected before query embedding generation.
+
+### Search Is Approximate By Default
+
+The default path queries the `<tableName>_embedding_idx` vector index through libSQL's `vector_top_k()`. **That index is an approximate-nearest-neighbor structure. It can miss a true nearest neighbor.** There is no configuration that makes the index path exact; only `exact: true` guarantees exactness.
+
+To limit the accuracy loss, the default path over-fetches: it pulls `candidates` rows from the index, recomputes the true `vector_distance_cos` for each, and orders exactly by `(distance, id)` before trimming to `limit`. So:
+
+- **Recall is approximate.** A row the index does not return as a candidate cannot appear in the results, no matter its true distance. Raising `candidates` raises recall.
+- **Ranking within the candidate set is exact.** Distances on returned rows are always the true cosine distances, not index approximations.
+- **Ordering is fully deterministic.** The `id` tiebreaker means two rows at an identical distance always come back in the same order, even though the index's own candidate order is not stable across runs.
+- **Rows with a `NULL` embedding are never returned.** The vector index excludes them on its own.
+
+**Both paths order by `(distance, id)`.** The determinism guarantee covers `exact: true` as well as the default, so the two paths return identical orderings for identical inputs and can be compared directly. This is a change in tie ordering for the exact path, which previously sorted by distance alone and left tied rows in whatever order the scan produced.
+
+### `candidates`
+
+Controls how many rows the index returns for the exact re-rank. It must be an integer from `limit` through `MAX_SEARCH_CANDIDATES`; a value below `limit` is rejected rather than clamped, because it would silently truncate the result set. Invalid values throw before query embedding generation and before any database call.
+
+```ts
+// Trade query cost for recall on a large corpus
+const results = await search({ client, query, limit: 10, candidates: 200 });
+```
+
+`candidates` has no effect when `exact` is `true` — that path scans every row — but it is **still validated**. `search({ exact: true, limit: 10, candidates: 5 })` throws, exactly as it would on the index path. Validity does not depend on which path a call happens to take.
+
+Related exported constants:
+
+- `DEFAULT_SEARCH_CANDIDATE_MULTIPLIER` (`4`): multiplier applied to `limit`
+- `MIN_SEARCH_CANDIDATES` (`32`): floor for the derived default
+- `MAX_SEARCH_CANDIDATES` (`1000`): ceiling for any explicit value. The derived default cannot reach it today, since `limit` tops out at `100`; the cap constrains explicit values.
+
+### `exact`
+
+Set `exact: true` to bypass the index and score every row in the table.
+
+```ts
+const results = await search({ client, query, exact: true });
+```
+
+This is the guaranteed-exact path: it computes `vector_distance_cos` for every row with a non-`NULL` embedding, sorts by `(distance, id)`, and trims to `limit`. Cost grows linearly with table size, so it is intended for small corpora, correctness checks against the index path, and tables that have no vector index.
+
+### Missing Vector Index
+
+If the target table has no `<tableName>_embedding_idx`, the default path throws an error naming the missing index and pointing at `createTable()` and `exact: true`. libSQL's own message for this case ("failed to parse vector index parameters") says nothing about a missing index, so it is preserved as the thrown error's `cause` rather than surfaced directly.
+
+A deployment with no vector support at all is a separate case with its own message. `vector_top_k()` does not exist there, so no `CREATE INDEX` can help and the error points only at `exact: true`.
+
+**Those two messages are the only ones rewritten.** Every other failure from the index path reaches the caller with its original message intact. In particular, a width mismatch between the query embedding and the `embedding` column surfaces as libSQL's own `vector index(search): dimensions are different: 384 != 4`, which names both widths and is the useful diagnostic for the dimension drift described in the [Migration and reindexing guide](./MIGRATIONS.md).
+
+Search never falls back to the exact scan on its own. A silent fallback would turn a one-line schema fix into an invisible, permanent full-table scan.
+
+### Requirements
+
+`vector_top_k()` and `libsql_vector_idx()` require a libSQL build with native vector support. The peer dependency is `@libsql/client ^0.15.0`; this behavior is verified against `@libsql/client` `0.15.15` with a local `:memory:` database. Remote Turso/libSQL servers must also support vector indexes — that is a property of the server, not the client, and no minimum server version is claimed here beyond that requirement. A deployment without it fails the default path with an error saying so and naming `exact: true` as the remedy. Use `exact: true` against any deployment where vector index support is unavailable or unverified.
 
 Result shape:
 

@@ -38,3 +38,41 @@ Common operational checks:
   `createTable()`, `indexContent()`, and `search()`, and re-index if the stored
   vectors are in the wrong space; see the
   [Migration and reindexing guide](./MIGRATIONS.md)
+
+## `@libsql/client` Version Differences
+
+The peer range is `^0.15.0 || ^0.17.0`, verified against `0.15.15` and `0.17.4`.
+There is no `0.16.x` line upstream. Everything this package depends on behaves
+the same on both — `vector_top_k()` returns rowids in an `id` column, the
+missing-index message this library rewrites ("failed to parse vector index
+parameters") and the dimension-mismatch message it passes through unchanged are
+both byte-identical, and `batch(..., "write")` still rolls the whole rebuild back
+on failure — so upgrading the client is optional and neither direction requires
+re-indexing. (The third message, the no-vector-support case, is not reproducible
+against a local build on either version; see
+[Requirements](./API.md#requirements).)
+
+Two client-side differences are visible to callers on `0.17.x`:
+
+- the client no longer exports `./package.json`. Reading it by specifier, as in
+  `require("@libsql/client/package.json")`, throws
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`. Nothing in this package does that; if your own
+  tooling did, read the file through a direct `node_modules` path instead
+- **constraint error codes lost the `_UNIQUE` suffix.** A duplicate slug that
+  reported `SQLITE_CONSTRAINT_UNIQUE` on `0.15.x` reports the broader
+  `SQLITE_CONSTRAINT` on `0.17.x`. This affects every caller on both query paths:
+
+  | | `0.15.15` | `0.17.4` |
+  | --- | --- | --- |
+  | `execute()` | `SQLITE_CONSTRAINT_UNIQUE: UNIQUE constraint failed: …` | `SQLITE_CONSTRAINT: UNIQUE constraint failed: …` |
+  | `batch(…, "write")` | `SQLITE_CONSTRAINT_UNIQUE: UNIQUE constraint failed: …` | `SQLITE_CONSTRAINT: SQLITE_CONSTRAINT: UNIQUE constraint failed: …` |
+
+  Note that the prefix is additionally **doubled on the `batch()` path only** —
+  that is the path `indexContent()` uses, so it is what surfaces as the `cause`
+  of an `IndexingError` with `phase: "replace"`. Your own `execute()` calls show
+  the single prefix. Both are cosmetic: the rollback and the `IndexingError`
+  contract are unchanged.
+
+  A log matcher or alert rule keyed on `SQLITE_CONSTRAINT_UNIQUE` will stop
+  matching after the upgrade, on either path. Match on `UNIQUE constraint failed`
+  instead — it is the one substring stable across all four cells above.

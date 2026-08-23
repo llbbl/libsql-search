@@ -1,16 +1,14 @@
 # Documentation
 
 This directory holds the longer-form reference material for `libsql-search`.
-Start with the page that matches the job you are doing:
 
-- [Provider guide](./PROVIDERS.md): local, hosted, and OpenAI-compatible
-  embedding options, dimensions, and API key behavior
+- [Provider selection and configuration](./PROVIDERS.md): compare local, hosted, and custom embedding providers before you build an index
+- [Integration examples](./INTEGRATIONS.md): reusable provider flow plus Astro and Next.js examples
+- [Migration and reindexing guide](./MIGRATIONS.md): table-width changes, provider/model swaps, and safe cutovers
 - [API reference](./API.md): exported functions, option shapes, and result data
-- [Integration examples](./INTEGRATIONS.md): Astro and Next.js server-side usage
-- [Indexing and operations](./INDEXING.md): content layout, rebuild scripts,
-  search quality tips, and indexing gotchas
-- [Troubleshooting](./TROUBLESHOOTING.md): known install/runtime issues
+- [Indexing and operations](./INDEXING.md): content layout, rebuild behavior, and search quality notes
+- [Testing guidance](./TESTING.md): CI-safe mocks and no-live-call policy
+- [Troubleshooting](./TROUBLESHOOTING.md): known install and runtime issues
 - [Releasing](./RELEASING.md): maintainer release workflow
 
-For the shortest first-use path, go back to the repository
-[README](../README.md).
+For the shortest first-use path, go back to the repository [README](../README.md).

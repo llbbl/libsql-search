@@ -5,27 +5,13 @@
 [![CI](https://github.com/llbbl/libsql-search/actions/workflows/ci.yml/badge.svg)](https://github.com/llbbl/libsql-search/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-`libsql-search` adds semantic search to Markdown-backed sites using libSQL/Turso.
-It indexes frontmatter and content from files on disk, stores vectors in your
-database, and lets you query by meaning instead of exact keywords.
+`libsql-search` adds semantic search to Markdown-backed sites with a small TypeScript API. It indexes frontmatter and content from files on disk, stores vectors in libSQL/Turso, and lets you query by meaning instead of exact keywords.
 
 Use it when you want:
 
-- a small TypeScript library instead of a hosted search product
-- one search index shared across static-site builds and app routes
-- local or hosted embeddings behind the same indexing/search API
-- direct control over table names, dimensions, content shape, and deployment
-
-## What It Supports
-
-- Markdown indexing from local directories with frontmatter via `gray-matter`
-- libSQL/Turso storage and vector search
-- Embedding providers: local Hugging Face `Xenova/all-MiniLM-L6-v2`,
-  Cloudflare Workers AI `@cf/baai/bge-m3`, Mistral `mistral-embed`, Google Gemini
-  `gemini-embedding-2`, and OpenAI `text-embedding-3-small` /
-  `text-embedding-3-large`; self-hosted OpenAI-compatible endpoints are also
-  available for TEI and similar trusted deployments
-- npm distribution plus JSR publishing
+- one indexing/search API across local and hosted embedding providers
+- direct control over vector dimensions, table names, and deployment shape
+- a lightweight library instead of a hosted search product
 
 ## Install
 
@@ -44,18 +30,10 @@ deno add jsr:@logan/libsql-search npm:@libsql/client
 ```
 
 For npm usage, the package requires Node `>=22.12.0`.
-Node examples in this README import from `libsql-search` and `@libsql/client`.
-In Deno, after `deno add`, import from `@logan/libsql-search` and
-`@libsql/client`.
 
 ## Quick Start
 
-The shortest working flow is:
-
-1. create a libSQL client
-2. create the search table
-3. index a Markdown directory
-4. query it with the same embedding provider and dimensions
+This example uses the default local provider. Local embeddings run in-process after the initial model download and cache warmup; they are not automatically air-gapped.
 
 ```ts
 import { createClient } from "@libsql/client";
@@ -66,11 +44,12 @@ const client = createClient({
   authToken: "your-auth-token",
 });
 
-await createTable(client);
+await createTable(client, "articles_local_384", 384);
 
 await indexContent({
   client,
   contentPath: "./content",
+  tableName: "articles_local_384",
   embeddingOptions: {
     provider: "local",
   },
@@ -79,6 +58,7 @@ await indexContent({
 const results = await search({
   client,
   query: "how do I deploy my docs site",
+  tableName: "articles_local_384",
   limit: 5,
   embeddingOptions: {
     provider: "local",
@@ -95,33 +75,31 @@ console.log(results.map((result) => ({
 Important behavior:
 
 - Call `createTable()` before indexing or searching.
-- Keep dimensions aligned across table creation, indexing, and search queries.
-- `indexContent()` clears existing rows before rebuilding the index.
-- `local` is the default offline provider and uses 384 dimensions. Cloudflare is
-  the recommended hosted option. Cloudflare and Mistral use 1024 dimensions.
-  Gemini defaults to 3072 dimensions and supports 128-3072.
+- Keep table width, provider, and dimensions aligned across create/index/query.
+- `indexContent()` clears existing rows before rebuilding and is not transactional.
+- Hosted providers send indexed and queried text to external services and may incur provider charges.
 
-## Core API
+## Providers
 
-- `createTable(client, tableName?, dimensions?)`
-- `indexContent(options)`
-- `search(options)`
-- `getAllArticles(client, tableName?)`
-- `getArticleBySlug(client, slug, tableName?)`
-- `getArticlesByFolder(client, folder, tableName?)`
-- `getFolders(client, tableName?)`
-- `generateEmbedding(text, options?)`
-- `prepareTextForEmbedding(fields)`
+Built-in providers:
+
+- `local` with `Xenova/all-MiniLM-L6-v2` at 384 dimensions
+- `cloudflare` with `@cf/baai/bge-m3` at 1024 dimensions
+- `mistral` with `mistral-embed` at 1024 dimensions
+- `gemini` with `gemini-embedding-2` at 128-3072 dimensions, default 3072
+- `openai` with `text-embedding-3-small` or `text-embedding-3-large`, default 768
+- `openai-compatible` for trusted OpenAI-compatible endpoints such as TEI
 
 ## Docs
 
-- [Docs index](./docs/README.md)
-- [Provider guide](./docs/PROVIDERS.md)
+- [Documentation index](./docs/README.md)
+- [Provider selection and configuration](./docs/PROVIDERS.md)
 - [API reference](./docs/API.md)
 - [Integration examples](./docs/INTEGRATIONS.md)
+- [Migration and reindexing guide](./docs/MIGRATIONS.md)
+- [Testing guidance](./docs/TESTING.md)
 - [Indexing and operations](./docs/INDEXING.md)
 - [Troubleshooting](./docs/TROUBLESHOOTING.md)
-- [Release workflow](./docs/RELEASING.md)
 
 ## License
 

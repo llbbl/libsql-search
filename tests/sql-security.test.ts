@@ -146,23 +146,31 @@ describe('SQL input security', () => {
   );
 
   it.each([
-    ['default', undefined, 10],
-    ['minimum', 1, 1],
-    ['maximum', 100, 100]
-  ])('uses the %s search limit policy', async (_name, limit, expectedLimit) => {
-    const client = createMockClient();
+    ['default', undefined, 10, 40],
+    ['minimum', 1, 1, 32],
+    ['maximum', 100, 100, 400]
+  ])(
+    'uses the %s search limit policy',
+    async (_name, limit, expectedLimit, expectedCandidates) => {
+      const client = createMockClient();
 
-    await search({
-      client,
-      query: 'guide',
-      ...(limit === undefined ? {} : { limit })
-    });
+      await search({
+        client,
+        query: 'guide',
+        ...(limit === undefined ? {} : { limit })
+      });
 
-    expect(generateEmbedding).toHaveBeenCalledWith('guide', { intent: 'query' });
-    expect(client.execute).toHaveBeenCalledWith(expect.objectContaining({
-      args: [JSON.stringify([0.1, 0.2, 0.3]), expectedLimit]
-    }));
-  });
+      expect(generateEmbedding).toHaveBeenCalledWith('guide', { intent: 'query' });
+      expect(client.execute).toHaveBeenCalledWith(expect.objectContaining({
+        args: {
+          queryVector: JSON.stringify([0.1, 0.2, 0.3]),
+          indexName: 'articles_embedding_idx',
+          candidates: expectedCandidates,
+          resultLimit: expectedLimit
+        }
+      }));
+    }
+  );
 
   it('defaults indexing embeddings to document intent', async () => {
     const client = createMockClient();

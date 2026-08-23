@@ -75,6 +75,26 @@ const results = await search({
 });
 ```
 
+## Tables Without The Embedding Vector Index
+
+`search()` queries the `<tableName>_embedding_idx` vector index by default rather than scanning the whole table. A table created by hand, or by a version of this package that predated that index, does not have it, and the default search path fails against such a table.
+
+Re-running `createTable()` with the table's existing width is the fix. It is idempotent — `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` — so it adds the missing index without touching rows and without resizing the vector column:
+
+```ts
+// Same name and same width as the existing table
+await createTable(client, "articles_local_384", 384);
+```
+
+Equivalently, in SQL:
+
+```sql
+CREATE INDEX IF NOT EXISTS "articles_local_384_embedding_idx"
+ON "articles_local_384"(libsql_vector_idx(embedding));
+```
+
+Reindexing does not create the index; `indexContent()` only replaces rows. Any new table created by `createTable()` as part of a migration already has it, so this applies only to pre-existing tables you are carrying forward. Until the index exists, `search({ ..., exact: true })` keeps queries working on the exact full-scan path.
+
 ## Common Migration Paths
 
 | From | To | Why a rebuild is required | Recommended table move |

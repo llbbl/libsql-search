@@ -111,6 +111,40 @@ await indexContent({
 
 Both behaviors changed in a breaking way: partial failures used to be counted and reported, and an empty directory used to return zeros without clearing the table.
 
+## The Embedding Vector Index
+
+`createTable()` creates `<tableName>_embedding_idx` alongside the table:
+
+```sql
+CREATE INDEX IF NOT EXISTS "<tableName>_embedding_idx"
+ON "<tableName>"(libsql_vector_idx(embedding))
+```
+
+`search()` requires that index by default. It queries the index through `vector_top_k()` instead of scoring every row, so query cost no longer grows linearly with the size of the index.
+
+That index is approximate. `search()` compensates by over-fetching candidates and re-ranking them exactly; see [`search(options)`](./API.md#searchoptions) for the recall and ordering semantics and for the `candidates` and `exact` options.
+
+### Tables Built Before The Index Existed
+
+A table created by hand, or by a version of this package that predated the embedding index, has no `<tableName>_embedding_idx`. The default search path fails on such a table with an error naming the missing index — libSQL's own message for the case ("failed to parse vector index parameters") does not mention it.
+
+`indexContent()` does not create the index; it only replaces rows. Two ways forward:
+
+```ts
+// Preferred: createTable() is idempotent and adds only what is missing
+await createTable(client, "articles", 384);
+```
+
+```sql
+-- Or create the index directly against the existing table
+CREATE INDEX IF NOT EXISTS "articles_embedding_idx"
+ON "articles"(libsql_vector_idx(embedding));
+```
+
+`createTable()` uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`, so calling it against an existing table adds the missing index without touching rows. It still does not resize an existing vector column.
+
+Until the index exists, pass `exact: true` to `search()` to keep queries working on the full-scan path.
+
 ## Quality Guidelines
 
 - include descriptive frontmatter titles
@@ -118,6 +152,7 @@ Both behaviors changed in a breaking way: partial failures used to be counted an
 - use the same provider and dimensions at index and query time
 - keep `maxLength` intentional if your content is very large
 - start with a smaller search `limit` and tune from real query behavior
+- raise `candidates` if the approximate index path misses results the exact path finds; compare the two with `exact: true` on a fixed set of queries
 
 ## Build Integration
 

@@ -29,6 +29,6 @@
     ]
   },
   "tasks": {
-    "check": "deno check --unstable-sloppy-imports src/index.ts"
+    "check": "deno check --unstable-sloppy-imports src/index.ts src/turso.ts"
   }
 }

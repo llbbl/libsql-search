@@ -5,6 +5,7 @@ const external = [
   '@huggingface/transformers',
   'gray-matter',
   '@google/genai',
+  '@tursodatabase/database',
   'onnxruntime-node',
   'onnxruntime-web',
   'sharp',
@@ -15,12 +16,22 @@ const external = [
   'node:path'
 ];
 
-export default {
-  input: 'src/index.ts',
-  output: {
-    file: 'dist/index.d.ts',
-    format: 'es'
+/**
+ * Declarations are bundled per entry point too, for the same reason the runtime
+ * is: `dist/index.d.ts` must not gain a reference to the Turso entry point, and
+ * `dist/turso.d.ts` must stand on its own.
+ */
+export default [
+  {
+    input: 'src/index.ts',
+    output: { file: 'dist/index.d.ts', format: 'es' },
+    external,
+    plugins: [dts()]
   },
-  external,
-  plugins: [dts()]
-};
+  {
+    input: 'src/turso.ts',
+    output: { file: 'dist/turso.d.ts', format: 'es' },
+    external,
+    plugins: [dts()]
+  }
+];

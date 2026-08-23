@@ -8,6 +8,7 @@ This directory holds the longer-form reference material for `libsql-search`.
 - [API reference](./API.md): exported functions, option shapes, and result data
 - [Indexing and operations](./INDEXING.md): content layout, rebuild behavior, and search quality notes
 - [Testing guidance](./TESTING.md): CI-safe mocks and no-live-call policy
+- [Turso Database backend](./TURSO.md): experimental exact-search-only support for the in-process `@tursodatabase/database` client
 - [Troubleshooting](./TROUBLESHOOTING.md): known install and runtime issues
 - [Releasing](./RELEASING.md): maintainer release workflow
 

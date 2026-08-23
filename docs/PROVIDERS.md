@@ -1,12 +1,13 @@
 # Embedding Providers
 
-`libsql-search` currently supports five embedding providers:
+`libsql-search` currently supports six embedding providers:
 
 - `local`
 - `cloudflare`
 - `mistral`
 - `gemini`
 - `openai`
+- `openai-compatible`
 
 Use the same provider and dimensions for both indexing and querying. A mismatch
 between stored vectors and query vectors will break search quality or fail at
@@ -16,10 +17,19 @@ query time.
 
 ```ts
 interface EmbeddingOptions {
-  provider?: "local" | "cloudflare" | "mistral" | "gemini" | "openai";
+  provider?:
+    | "local"
+    | "cloudflare"
+    | "mistral"
+    | "gemini"
+    | "openai"
+    | "openai-compatible";
   apiKey?: string;
   accountId?: string;
   apiToken?: string;
+  baseUrl?: string;
+  model?: string;
+  batchSize?: number;
   dimensions?: number;
   maxLength?: number;
   intent?: "document" | "query";
@@ -37,9 +47,12 @@ interface EmbeddingOptions {
   `"document"` and search defaults to `"query"` unless explicitly set
 - `timeoutMs` defaults to `30000`
 - `apiKey` is used by Mistral, Gemini, and OpenAI and falls back to
-  `MISTRAL_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY`
+  `MISTRAL_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY`. For
+  `openai-compatible`, `apiKey` is optional and never falls back to
+  `OPENAI_API_KEY`.
 - `accountId` and `apiToken` are used by Cloudflare and fall back to
   `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
+- `baseUrl`, `model`, and `batchSize` are used by `openai-compatible`
 
 ## Provider Contract
 
@@ -47,7 +60,13 @@ Each provider exposes immutable metadata:
 
 ```ts
 interface EmbeddingProviderMetadata {
-  name: "local" | "cloudflare" | "mistral" | "gemini" | "openai";
+  name:
+    | "local"
+    | "cloudflare"
+    | "mistral"
+    | "gemini"
+    | "openai"
+    | "openai-compatible";
   model: string;
   dimensions: number;
   batch: {
@@ -229,6 +248,80 @@ Behavior:
 - batch metadata is `{ mode: "native", maxSize: 2048 }`
 - use the same dimension count in `createTable()`
 
+## OpenAI-Compatible Endpoints
+
+Provider value: `openai-compatible`
+
+Use this provider for trusted OpenAI-compatible embedding services such as
+Hugging Face Text Embeddings Inference (TEI) or an internal gateway. This is an
+optional escape hatch; `local` remains the default offline provider, and the
+named hosted providers above are still preferred when their fixed adapters fit.
+
+```ts
+embeddingOptions: {
+  provider: "openai-compatible",
+  baseUrl: "http://localhost:8080/v1",
+  model: "BAAI/bge-large-en-v1.5",
+  dimensions: 1024,
+  batchSize: 32,
+}
+```
+
+If your endpoint requires bearer auth, pass `apiKey` explicitly:
+
+```ts
+embeddingOptions: {
+  provider: "openai-compatible",
+  baseUrl: "https://embeddings.example.com/v1",
+  apiKey: process.env.EMBEDDINGS_API_KEY,
+  model: "BAAI/bge-large-en-v1.5",
+  dimensions: 1024,
+}
+```
+
+Behavior:
+
+- `baseUrl`, `model`, and `dimensions` are required
+- `baseUrl` is the API base, such as `http://localhost:8080/v1`; the library
+  sends requests to `/embeddings` below that base
+- a base URL that already ends in `/embeddings` is used as-is
+- only absolute `http` and `https` URLs are accepted
+- URL usernames, passwords, query strings, and fragments are rejected
+- `apiKey` is optional; blank keys are ignored and no `Authorization` header is
+  sent
+- `OPENAI_API_KEY` is never read for this provider
+- `batchSize` defaults to `32`, matching TEI's conservative client batch size;
+  larger input arrays are split into sequential outbound requests and returned
+  in the original input order
+- requests send `{ input, model, dimensions, encoding_format: "float" }`
+- responses must use the standard OpenAI embeddings shape with indexed
+  `data[]` items; each response chunk must include unique contiguous indices
+- batch metadata is `{ mode: "native" }`; the internal outbound chunk size is
+  not reported as `batch.maxSize`
+
+Security boundary:
+
+- treat `baseUrl` as trusted server-side configuration only
+- never pass user-supplied request values directly into `baseUrl`
+- use HTTPS for remote endpoints
+- credentials are not sent across redirects
+- non-2xx response bodies are not read, and errors avoid echoing API keys or
+  configured endpoint URLs
+
+TEI exposes an OpenAI-compatible base at `/v1`, so a local TEI server usually
+uses:
+
+```ts
+embeddingOptions: {
+  provider: "openai-compatible",
+  baseUrl: "http://localhost:8080/v1",
+  model: "BAAI/bge-large-en-v1.5",
+  dimensions: 1024,
+}
+```
+
+This library does not call TEI's native `/embed` endpoint.
+
 ## Dimension Guidelines
 
 - `local` is fixed at `384`
@@ -238,9 +331,12 @@ Behavior:
   `3072`; use `768`, `1536`, or `3072` unless you have a specific reason
 - OpenAI can be used at 1536 or 3072, or another supported OpenAI dimension
   value you explicitly set
+- `openai-compatible` requires you to set the dimension count that your
+  endpoint/model actually returns
 
-If you switch provider or dimensions for an existing table, recreate the table
-or rebuild the index into a separate table so stored vectors stay consistent.
+If you switch provider, endpoint, model, or dimensions for an existing table,
+recreate the table or rebuild the index into a separate table so stored vectors
+stay consistent.
 
 Existing Gemini indexes created with `text-embedding-004` must be fully
 re-embedded for `gemini-embedding-2`, even if you keep `dimensions: 768`,

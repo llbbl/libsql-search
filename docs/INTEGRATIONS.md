@@ -132,6 +132,7 @@ const embeddingProvider =
     | "mistral"
     | "gemini"
     | "openai"
+    | "openai-compatible"
     | undefined;
 
 const dimensionsByProvider = {
@@ -142,7 +143,10 @@ const dimensionsByProvider = {
   openai: 1536,
 } as const;
 
-const embeddingDimensions = dimensionsByProvider[embeddingProvider ?? "local"];
+const embeddingDimensions =
+  embeddingProvider === "openai-compatible"
+    ? Number(process.env.EMBEDDING_DIMENSIONS)
+    : dimensionsByProvider[embeddingProvider ?? "local"];
 
 await createTable(client, "articles", embeddingDimensions);
 
@@ -151,6 +155,8 @@ await indexContent({
   contentPath: "./content",
   embeddingOptions: {
     provider: embeddingProvider,
+    baseUrl: process.env.EMBEDDING_BASE_URL,
+    model: process.env.EMBEDDING_MODEL,
     dimensions: embeddingDimensions,
   },
 });
@@ -158,3 +164,9 @@ await indexContent({
 
 Pair this with your framework build command so indexed content and deployed code
 stay in sync.
+
+When you use `openai-compatible`, keep `EMBEDDING_BASE_URL` as trusted
+server-side configuration, not user request input. Recreate the vector table or
+rebuild into a separate table whenever the provider, endpoint, model, or
+dimension count changes; stored vectors and query vectors must come from the
+same embedding space.

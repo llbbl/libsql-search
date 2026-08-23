@@ -1,9 +1,16 @@
 /**
  * Multi-provider embedding generation
- * Supports local Hugging Face Transformers, Gemini, OpenAI, Mistral, and Cloudflare Workers AI
+ * Supports local Hugging Face Transformers, Gemini, OpenAI, Mistral,
+ * Cloudflare Workers AI, and custom OpenAI-compatible endpoints
  */
 
-export type EmbeddingProvider = 'local' | 'gemini' | 'openai' | 'mistral' | 'cloudflare';
+export type EmbeddingProvider =
+  | 'local'
+  | 'gemini'
+  | 'openai'
+  | 'mistral'
+  | 'cloudflare'
+  | 'openai-compatible';
 export type EmbeddingIntent = 'document' | 'query';
 export type EmbeddingBatchMode = 'native' | 'sequential';
 
@@ -42,6 +49,9 @@ export interface EmbeddingOptions {
   apiKey?: string;
   accountId?: string;
   apiToken?: string;
+  baseUrl?: string;
+  model?: string;
+  batchSize?: number;
   dimensions?: number;
   maxLength?: number;
   intent?: EmbeddingIntent;
@@ -99,6 +109,7 @@ export interface EmbeddingBatchItemResult {
 export type EmbeddingBatchItem = number[] | EmbeddingBatchItemResult;
 
 const OPENAI_DEFAULT_DIMENSIONS = 768;
+const OPENAI_COMPATIBLE_DEFAULT_BATCH_SIZE = 32;
 const LOCAL_DIMENSIONS = 384;
 const DEFAULT_MAX_LENGTH = 8000;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -229,6 +240,7 @@ function resolveProviderName(provider: EmbeddingProvider | undefined): Embedding
     case 'openai':
     case 'mistral':
     case 'cloudflare':
+    case 'openai-compatible':
       return provider ?? 'local';
     default:
       throw new Error(`Unknown embedding provider: ${String(provider)}`);
@@ -256,6 +268,15 @@ function getOpenAIModel(dimensions: number): string {
 function getOptionalTrimmedCredential(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function getRequiredTrimmedString(value: string | undefined, optionName: string): string {
+  const trimmed = getOptionalTrimmedCredential(value);
+  if (!trimmed) {
+    throw new Error(`Invalid ${optionName}: expected a non-empty string`);
+  }
+
+  return trimmed;
 }
 
 function hasOwnProperty(value: object, property: string): boolean {
@@ -501,9 +522,35 @@ async function embedSequentially(
   return results;
 }
 
+function normalizeOpenAICompatibleEmbeddingsUrl(baseUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error('Invalid baseUrl: expected an absolute http or https URL');
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Invalid baseUrl: expected an absolute http or https URL');
+  }
+
+  if (url.username || url.password) {
+    throw new Error('Invalid baseUrl: URL credentials are not allowed');
+  }
+
+  if (url.search || url.hash) {
+    throw new Error('Invalid baseUrl: query strings and fragments are not allowed');
+  }
+
+  const path = url.pathname.replace(/\/+$/, '');
+  url.pathname = path.endsWith('/embeddings') ? path : `${path}/embeddings`;
+  return url.toString();
+}
+
 function createProviderMetadata(
   provider: EmbeddingProvider,
-  dimensions: number
+  dimensions: number,
+  model?: string
 ): EmbeddingProviderMetadata {
   switch (provider) {
     case 'local':
@@ -539,6 +586,13 @@ function createProviderMetadata(
         name: 'cloudflare' as const,
         model: CLOUDFLARE_MODEL,
         dimensions: CLOUDFLARE_DIMENSIONS,
+        batch: Object.freeze({ mode: 'native' as const })
+      });
+    case 'openai-compatible':
+      return Object.freeze({
+        name: 'openai-compatible' as const,
+        model: getRequiredTrimmedString(model, 'model'),
+        dimensions,
         batch: Object.freeze({ mode: 'native' as const })
       });
   }
@@ -597,6 +651,14 @@ function getEffectiveDimensions(
     return CLOUDFLARE_DIMENSIONS;
   }
 
+  if (provider === 'openai-compatible') {
+    if (dimensions === undefined) {
+      throw new Error('Invalid dimensions: expected a positive integer');
+    }
+
+    return getPositiveInteger(dimensions, 'dimensions');
+  }
+
   return getPositiveInteger(dimensions ?? OPENAI_DEFAULT_DIMENSIONS, 'dimensions');
 }
 
@@ -607,6 +669,15 @@ function assertBatchSize(metadata: EmbeddingProviderMetadata, count: number): vo
       `batch size ${count} exceeds maximum ${metadata.batch.maxSize}`
     );
   }
+}
+
+function chunkTexts(texts: string[], batchSize: number): string[][] {
+  const chunks: string[][] = [];
+  for (let index = 0; index < texts.length; index += batchSize) {
+    chunks.push(texts.slice(index, index + batchSize));
+  }
+
+  return chunks;
 }
 
 function createEmbeddingBatchResult(
@@ -717,13 +788,18 @@ class GeminiEmbeddingProvider implements EmbeddingProviderClient {
 interface OpenAICompatibleEmbeddingsRequest {
   responseLabel: string;
   endpoint: string;
-  apiKey: string;
+  apiKey?: string;
   model: string;
   texts: string[];
   signal: AbortSignal;
   dimensions?: number;
   encodingFormat?: 'float';
   requireIndex?: boolean;
+  redirect?: 'error';
+  statusHeader?: {
+    name: string;
+    label: string;
+  };
 }
 
 async function requestOpenAICompatibleEmbeddings(
@@ -742,19 +818,28 @@ async function requestOpenAICompatibleEmbeddings(
     body.encoding_format = request.encodingFormat;
   }
 
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  };
+
+  if (request.apiKey !== undefined) {
+    headers.Authorization = `Bearer ${request.apiKey}`;
+  }
+
   const response = await fetch(request.endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${request.apiKey}`
-    },
+    headers,
     signal: request.signal,
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    ...(request.redirect ? { redirect: request.redirect } : {})
   });
 
   if (!response.ok) {
-    const requestId = getSafeResponseHeader(response, 'x-request-id');
-    const context = requestId ? ` status ${response.status}, request ${requestId}` : ` status ${response.status}`;
+    const statusHeader = request.statusHeader ?? { name: 'x-request-id', label: 'request' };
+    const statusHeaderValue = getSafeResponseHeader(response, statusHeader.name);
+    const context = statusHeaderValue
+      ? ` status ${response.status}, ${statusHeader.label} ${statusHeaderValue}`
+      : ` status ${response.status}`;
     throw new Error(context);
   }
 
@@ -784,57 +869,33 @@ async function requestOpenAICompatibleEmbeddings(
   });
 }
 
-class OpenAIEmbeddingProvider implements EmbeddingProviderClient {
-  readonly metadata: EmbeddingProviderMetadata;
-  readonly #apiKey: string;
-  readonly #timeoutMs: number;
-
-  constructor(metadata: EmbeddingProviderMetadata, apiKey: string, timeoutMs: number) {
-    this.metadata = metadata;
-    this.#apiKey = apiKey;
-    this.#timeoutMs = timeoutMs;
-  }
-
-  async embed(texts: string[], options: EmbeddingRequestOptions = {}): Promise<EmbeddingBatchResult> {
-    const intent = resolveIntent(options.intent);
-    if (texts.length === 0) {
-      return createEmbeddingBatchResult(this.metadata, intent, []);
-    }
-
-    assertBatchSize(this.metadata, texts.length);
-    const items = await withTimeout(
-      'openai',
-      'API request',
-      this.#timeoutMs,
-      async (signal) => requestOpenAICompatibleEmbeddings({
-        responseLabel: 'OpenAI',
-        endpoint: OPENAI_EMBEDDINGS_URL,
-        apiKey: this.#apiKey,
-        model: this.metadata.model,
-        texts,
-        signal,
-        dimensions: this.metadata.dimensions
-      }),
-      options.signal,
-      [this.#apiKey]
-    );
-
-    return createEmbeddingBatchResult(
-      this.metadata,
-      intent,
-      validateEmbeddingBatch(items, texts.length, this.metadata.dimensions, 'openai')
-    );
-  }
+interface OpenAICompatibleProviderProfile {
+  provider: EmbeddingProvider;
+  responseLabel: string;
+  endpoint: string;
+  apiKey?: string;
+  model: string;
+  dimensions: number;
+  includeDimensions?: boolean;
+  encodingFormat?: 'float';
+  requireIndex?: boolean;
+  redirect?: 'error';
+  statusHeader?: {
+    name: string;
+    label: string;
+  };
+  batchSize?: number;
+  exactSecrets?: readonly string[];
 }
 
-class MistralEmbeddingProvider implements EmbeddingProviderClient {
+class OpenAICompatibleEmbeddingProvider implements EmbeddingProviderClient {
   readonly metadata: EmbeddingProviderMetadata;
-  readonly #apiKey: string;
   readonly #timeoutMs: number;
+  readonly #profile: OpenAICompatibleProviderProfile;
 
-  constructor(metadata: EmbeddingProviderMetadata, apiKey: string, timeoutMs: number) {
+  constructor(metadata: EmbeddingProviderMetadata, profile: OpenAICompatibleProviderProfile, timeoutMs: number) {
     this.metadata = metadata;
-    this.#apiKey = apiKey;
+    this.#profile = profile;
     this.#timeoutMs = timeoutMs;
   }
 
@@ -846,104 +907,49 @@ class MistralEmbeddingProvider implements EmbeddingProviderClient {
 
     assertBatchSize(this.metadata, texts.length);
     const items = await withTimeout(
-      'mistral',
-      'API request',
-      this.#timeoutMs,
-      async (signal) => requestOpenAICompatibleEmbeddings({
-        responseLabel: 'Mistral',
-        endpoint: MISTRAL_EMBEDDINGS_URL,
-        apiKey: this.#apiKey,
-        model: this.metadata.model,
-        texts,
-        signal,
-        encodingFormat: 'float',
-        requireIndex: true
-      }),
-      options.signal,
-      [this.#apiKey]
-    );
-
-    return createEmbeddingBatchResult(
-      this.metadata,
-      intent,
-      validateEmbeddingBatch(items, texts.length, this.metadata.dimensions, 'mistral')
-    );
-  }
-}
-
-class CloudflareEmbeddingProvider implements EmbeddingProviderClient {
-  readonly metadata: EmbeddingProviderMetadata;
-  readonly #accountId: string;
-  readonly #apiToken: string;
-  readonly #timeoutMs: number;
-
-  constructor(metadata: EmbeddingProviderMetadata, accountId: string, apiToken: string, timeoutMs: number) {
-    this.metadata = metadata;
-    this.#accountId = accountId;
-    this.#apiToken = apiToken;
-    this.#timeoutMs = timeoutMs;
-  }
-
-  async embed(texts: string[], options: EmbeddingRequestOptions = {}): Promise<EmbeddingBatchResult> {
-    const intent = resolveIntent(options.intent);
-    if (texts.length === 0) {
-      return createEmbeddingBatchResult(this.metadata, intent, []);
-    }
-
-    assertBatchSize(this.metadata, texts.length);
-    const endpoint = createCloudflareEmbeddingsUrl(this.#accountId);
-    const items = await withTimeout(
-      'cloudflare',
+      this.#profile.provider,
       'API request',
       this.#timeoutMs,
       async (signal) => {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.#apiToken}`
-          },
-          signal,
-          body: JSON.stringify({
-            model: this.metadata.model,
-            input: texts
-          })
-        });
+        const batches = this.#profile.batchSize === undefined
+          ? [texts]
+          : chunkTexts(texts, this.#profile.batchSize);
+        const results: EmbeddingBatchItem[] = [];
 
-        if (!response.ok) {
-          const cfRay = getSafeResponseHeader(response, 'cf-ray');
-          const context = cfRay ? ` status ${response.status}, cf-ray ${cfRay}` : ` status ${response.status}`;
-          throw new Error(context);
+        for (const batch of batches) {
+          throwIfAborted(this.#profile.provider, 'API request', signal);
+          const batchItems = await requestOpenAICompatibleEmbeddings({
+            responseLabel: this.#profile.responseLabel,
+            endpoint: this.#profile.endpoint,
+            ...(this.#profile.apiKey !== undefined ? { apiKey: this.#profile.apiKey } : {}),
+            model: this.#profile.model,
+            texts: batch,
+            signal,
+            ...(this.#profile.includeDimensions ? { dimensions: this.#profile.dimensions } : {}),
+            ...(this.#profile.encodingFormat ? { encodingFormat: this.#profile.encodingFormat } : {}),
+            ...(this.#profile.requireIndex !== undefined ? { requireIndex: this.#profile.requireIndex } : {}),
+            ...(this.#profile.redirect ? { redirect: this.#profile.redirect } : {}),
+            ...(this.#profile.statusHeader ? { statusHeader: this.#profile.statusHeader } : {})
+          });
+          results.push(...validateEmbeddingBatch(
+            batchItems,
+            batch.length,
+            this.metadata.dimensions,
+            this.#profile.provider
+          ));
+          throwIfAborted(this.#profile.provider, 'API request', signal);
         }
 
-        const data = await response.json() as OpenAIEmbeddingResponse;
-        if (!Array.isArray(data.data)) {
-          throw new Error('Cloudflare response did not include a data array');
-        }
-
-        return data.data.map((item: unknown): EmbeddingBatchItem => {
-          const typed = item as OpenAIEmbeddingItem;
-          const embedding = typed.embedding;
-          if (!Array.isArray(embedding)) {
-            throw new Error('Cloudflare response item did not include an embedding array');
-          }
-
-          const parsed: EmbeddingBatchItemResult = { embedding };
-          if (hasOwnProperty(typed, 'index')) {
-            parsed.index = typed.index;
-          }
-
-          return parsed;
-        });
+        return results;
       },
       options.signal,
-      [this.#apiToken, this.#accountId, encodeURIComponent(this.#accountId)]
+      this.#profile.exactSecrets ?? []
     );
 
     return createEmbeddingBatchResult(
       this.metadata,
       intent,
-      validateEmbeddingBatch(items, texts.length, this.metadata.dimensions, 'cloudflare')
+      validateEmbeddingBatch(items, texts.length, this.metadata.dimensions, this.#profile.provider)
     );
   }
 }
@@ -972,7 +978,16 @@ export function createEmbeddingProvider(options: EmbeddingOptions = {}): Embeddi
         throw new Error('OPENAI_API_KEY is required for OpenAI embeddings');
       }
 
-      return new OpenAIEmbeddingProvider(metadata, key, timeoutMs);
+      return new OpenAICompatibleEmbeddingProvider(metadata, {
+        provider: 'openai',
+        responseLabel: 'OpenAI',
+        endpoint: OPENAI_EMBEDDINGS_URL,
+        apiKey: key,
+        model: metadata.model,
+        dimensions: metadata.dimensions,
+        includeDimensions: true,
+        exactSecrets: [key]
+      }, timeoutMs);
     }
     case 'mistral': {
       const key = getOptionalTrimmedCredential(
@@ -982,7 +997,17 @@ export function createEmbeddingProvider(options: EmbeddingOptions = {}): Embeddi
         throw new Error('MISTRAL_API_KEY is required for Mistral embeddings');
       }
 
-      return new MistralEmbeddingProvider(metadata, key, timeoutMs);
+      return new OpenAICompatibleEmbeddingProvider(metadata, {
+        provider: 'mistral',
+        responseLabel: 'Mistral',
+        endpoint: MISTRAL_EMBEDDINGS_URL,
+        apiKey: key,
+        model: metadata.model,
+        dimensions: metadata.dimensions,
+        encodingFormat: 'float',
+        requireIndex: true,
+        exactSecrets: [key]
+      }, timeoutMs);
     }
     case 'cloudflare': {
       const accountId = getOptionalTrimmedCredential(
@@ -1000,14 +1025,59 @@ export function createEmbeddingProvider(options: EmbeddingOptions = {}): Embeddi
         throw new Error('CLOUDFLARE_API_TOKEN is required for Cloudflare embeddings');
       }
 
-      return new CloudflareEmbeddingProvider(metadata, accountId, apiToken, timeoutMs);
+      const endpoint = createCloudflareEmbeddingsUrl(accountId);
+      return new OpenAICompatibleEmbeddingProvider(metadata, {
+        provider: 'cloudflare',
+        responseLabel: 'Cloudflare',
+        endpoint,
+        apiKey: apiToken,
+        model: metadata.model,
+        dimensions: metadata.dimensions,
+        statusHeader: { name: 'cf-ray', label: 'cf-ray' },
+        exactSecrets: [apiToken, accountId, encodeURIComponent(accountId), endpoint]
+      }, timeoutMs);
+    }
+    case 'openai-compatible': {
+      const baseUrl = getRequiredTrimmedString(options.baseUrl, 'baseUrl');
+      const endpoint = normalizeOpenAICompatibleEmbeddingsUrl(baseUrl);
+      const apiKey = getOptionalTrimmedCredential(options.apiKey);
+      const batchSize = getPositiveInteger(
+        options.batchSize ?? OPENAI_COMPATIBLE_DEFAULT_BATCH_SIZE,
+        'batchSize'
+      );
+
+      return new OpenAICompatibleEmbeddingProvider(metadata, {
+        provider: 'openai-compatible',
+        responseLabel: 'OpenAI-compatible',
+        endpoint,
+        ...(apiKey ? { apiKey } : {}),
+        model: metadata.model,
+        dimensions: metadata.dimensions,
+        includeDimensions: true,
+        encodingFormat: 'float',
+        requireIndex: true,
+        redirect: 'error',
+        batchSize,
+        exactSecrets: [
+          ...(apiKey ? [apiKey] : []),
+          baseUrl,
+          endpoint
+        ]
+      }, timeoutMs);
     }
   }
 }
 
 export function getEmbeddingProviderMetadata(options: EmbeddingOptions = {}): EmbeddingProviderMetadata {
   const provider = resolveProviderName(options.provider);
-  return createProviderMetadata(provider, getEffectiveDimensions(provider, options.dimensions));
+  if (provider === 'openai-compatible') {
+    normalizeOpenAICompatibleEmbeddingsUrl(getRequiredTrimmedString(options.baseUrl, 'baseUrl'));
+    if (options.batchSize !== undefined) {
+      getPositiveInteger(options.batchSize, 'batchSize');
+    }
+  }
+
+  return createProviderMetadata(provider, getEffectiveDimensions(provider, options.dimensions), options.model);
 }
 
 /**

@@ -557,6 +557,10 @@ describe('embeddings', () => {
         provider: 'gemini'
       })).resolves.toEqual([]);
 
+      await expect(generateEmbeddings([], {
+        provider: 'openai-compatible'
+      })).resolves.toEqual([]);
+
       expect(fetchMock).not.toHaveBeenCalled();
       expect(geminiMock.keys).toEqual([]);
       expect(huggingFaceTransformersMock.pipeline).not.toHaveBeenCalled();
@@ -721,6 +725,245 @@ describe('embeddings', () => {
 
       expect(geminiMock.keys).toEqual([]);
       expect(geminiMock.embedContent).not.toHaveBeenCalled();
+    });
+
+    it('exposes OpenAI-compatible metadata from explicit model and dimensions', () => {
+      expect(getEmbeddingProviderMetadata({
+        provider: 'openai-compatible',
+        baseUrl: 'http://localhost:8080/v1',
+        model: 'tei-model',
+        dimensions: 1024
+      })).toEqual({
+        name: 'openai-compatible',
+        model: 'tei-model',
+        dimensions: 1024,
+        batch: { mode: 'native' }
+      });
+    });
+
+    it.each([
+      {
+        name: 'baseUrl',
+        options: { provider: 'openai-compatible', model: 'tei-model', dimensions: 1024 },
+        expected: /Invalid baseUrl: expected a non-empty string/
+      },
+      {
+        name: 'model',
+        options: { provider: 'openai-compatible', baseUrl: 'http://localhost:8080/v1', dimensions: 1024 },
+        expected: /Invalid model: expected a non-empty string/
+      },
+      {
+        name: 'dimensions',
+        options: { provider: 'openai-compatible', baseUrl: 'http://localhost:8080/v1', model: 'tei-model' },
+        expected: /Invalid dimensions: expected a positive integer/
+      },
+      {
+        name: 'batchSize',
+        options: {
+          provider: 'openai-compatible',
+          baseUrl: 'http://localhost:8080/v1',
+          model: 'tei-model',
+          dimensions: 1024,
+          batchSize: 0
+        },
+        expected: /Invalid batchSize: expected a positive integer/
+      }
+    ])('rejects missing or invalid OpenAI-compatible $name before network work', async ({ options, expected }) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      expect(() => getEmbeddingProviderMetadata(options as EmbeddingOptions)).toThrow(expected);
+      await expect(generateEmbedding('test', options as EmbeddingOptions)).rejects.toThrow(expected);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'localhost:8080/v1',
+      'ftp://localhost:8080/v1',
+      'http://user:pass@localhost:8080/v1',
+      'http://localhost:8080/v1?api_key=secret',
+      'http://localhost:8080/v1#fragment'
+    ])('rejects unsafe OpenAI-compatible baseUrl without echoing it: %s', async (baseUrl) => {
+      const options: EmbeddingOptions = {
+        provider: 'openai-compatible',
+        baseUrl,
+        model: 'tei-model',
+        dimensions: 1024
+      };
+
+      let message = '';
+      try {
+        getEmbeddingProviderMetadata(options);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toMatch(/Invalid baseUrl/);
+      expect(message).not.toContain(baseUrl);
+      await expect(generateEmbedding('test', options)).rejects.toThrow(/Invalid baseUrl/);
+    });
+
+    it.each([
+      ['http://localhost:8080/v1', 'http://localhost:8080/v1/embeddings'],
+      ['http://localhost:8080/v1/', 'http://localhost:8080/v1/embeddings'],
+      ['http://localhost:8080/v1/embeddings', 'http://localhost:8080/v1/embeddings']
+    ])('normalizes OpenAI-compatible base URL %s', async (baseUrl, expectedUrl) => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data: [{ index: 0, embedding: [1, 2] }] })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbedding('test', {
+        provider: 'openai-compatible',
+        baseUrl,
+        apiKey: '  custom-key  ',
+        model: 'tei-model',
+        dimensions: 2
+      })).resolves.toEqual([1, 2]);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expectedUrl,
+        expect.objectContaining({
+          method: 'POST',
+          redirect: 'error',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer custom-key'
+          })
+        })
+      );
+
+      const request = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(JSON.parse(request.body as string)).toEqual({
+        input: ['test'],
+        model: 'tei-model',
+        dimensions: 2,
+        encoding_format: 'float'
+      });
+    });
+
+    it('omits OpenAI-compatible Authorization when apiKey is absent or blank and never reads OPENAI_API_KEY', async () => {
+      process.env.OPENAI_API_KEY = 'env-openai-key';
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data: [{ index: 0, embedding: [1, 2] }] })
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbedding('test', {
+        provider: 'openai-compatible',
+        baseUrl: 'http://localhost:8080/v1',
+        apiKey: '   ',
+        model: 'tei-model',
+        dimensions: 2
+      })).resolves.toEqual([1, 2]);
+
+      const request = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(request.headers).toEqual({
+        'Content-Type': 'application/json'
+      });
+    });
+
+    it('chunks OpenAI-compatible batches sequentially and preserves global input order', async () => {
+      const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(init.body as string) as { input: string[] };
+        return {
+          ok: true,
+          headers: new Headers(),
+          json: async () => ({
+            data: body.input
+              .map((text, index) => ({ index, embedding: [Number(text)] }))
+              .reverse()
+          })
+        };
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbeddings(['1', '2', '3', '4', '5'], {
+        provider: 'openai-compatible',
+        baseUrl: 'http://localhost:8080/v1',
+        model: 'tei-model',
+        dimensions: 1,
+        batchSize: 2
+      })).resolves.toEqual([[1], [2], [3], [4], [5]]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock.mock.calls.map(call =>
+        JSON.parse((call[1] as RequestInit).body as string).input
+      )).toEqual([
+        ['1', '2'],
+        ['3', '4'],
+        ['5']
+      ]);
+    });
+
+    it.each([
+      {
+        name: 'missing top-level data',
+        data: undefined,
+        expected: /OpenAI-compatible response did not include a data array/
+      },
+      {
+        name: 'wrong cardinality',
+        data: [{ index: 0, embedding: [1, 2] }],
+        expected: /expected 2 embedding result\(s\), received 1/
+      },
+      {
+        name: 'missing index',
+        data: [{ index: 0, embedding: [1, 2] }, { embedding: [3, 4] }],
+        expected: /OpenAI-compatible response item did not include an index/
+      },
+      {
+        name: 'duplicate index',
+        data: [{ index: 0, embedding: [1, 2] }, { index: 0, embedding: [3, 4] }],
+        expected: /duplicate embedding index 0/
+      },
+      {
+        name: 'noninteger index',
+        data: [{ index: 0, embedding: [1, 2] }, { index: 0.5, embedding: [3, 4] }],
+        expected: /invalid embedding index 0.5/
+      },
+      {
+        name: 'negative index',
+        data: [{ index: 0, embedding: [1, 2] }, { index: -1, embedding: [3, 4] }],
+        expected: /invalid embedding index -1/
+      },
+      {
+        name: 'out-of-range index',
+        data: [{ index: 0, embedding: [1, 2] }, { index: 2, embedding: [3, 4] }],
+        expected: /invalid embedding index 2/
+      },
+      {
+        name: 'wrong dimensions',
+        data: [{ index: 0, embedding: [1, 2] }, { index: 1, embedding: [3] }],
+        expected: /embedding 1 has 1 dimensions, expected 2/
+      },
+      {
+        name: 'non-finite value',
+        data: [{ index: 0, embedding: [1, 2] }, { index: 1, embedding: [Number.NaN, 4] }],
+        expected: /embedding 1 contains a non-finite value at dimension 0/
+      }
+    ])('rejects invalid OpenAI-compatible $name responses', async ({ data, expected }) => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => data === undefined ? {} : { data }
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(generateEmbeddings(['first', 'second'], {
+        provider: 'openai-compatible',
+        baseUrl: 'http://localhost:8080/v1',
+        model: 'tei-model',
+        dimensions: 2
+      })).rejects.toThrow(expected);
     });
 
     it('validates and reorders indexed batch results', () => {
@@ -1460,6 +1703,48 @@ describe('embeddings', () => {
       expect(responseText).not.toHaveBeenCalled();
     });
 
+    it('redacts OpenAI-compatible failures without reading raw response bodies or leaking endpoint config', async () => {
+      const responseText = vi.fn(async () => 'Authorization: Bearer should-not-appear api_key=secret');
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        headers: new Headers({ 'x-request-id': ' req_custom/with spaces ' }),
+        text: responseText
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      const baseUrl = 'https://embeddings.internal.example/v1';
+      const apiKey = 'secret-compatible-key';
+
+      await expect(generateEmbedding('test', {
+        provider: 'openai-compatible',
+        baseUrl,
+        apiKey,
+        model: 'tei-model',
+        dimensions: 2
+      })).rejects.toThrow('openai-compatible embedding error: API request failed: status 500, request req_customwithspaces');
+
+      let message = '';
+      try {
+        await generateEmbedding('test', {
+          provider: 'openai-compatible',
+          baseUrl,
+          apiKey,
+          model: 'tei-model',
+          dimensions: 2
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(responseText).not.toHaveBeenCalled();
+      expect(message).not.toContain(baseUrl);
+      expect(message).not.toContain(`${baseUrl}/embeddings`);
+      expect(message).not.toContain(apiKey);
+      expect(message).not.toContain('should-not-appear');
+    });
+
     it('redacts the exact OpenAI credential from transport rejections', async () => {
       const secret = 'sk-literal-openai-secret';
       const fetchMock = vi.fn().mockRejectedValue(
@@ -1507,6 +1792,36 @@ describe('embeddings', () => {
       expect(message).toContain('transport failed');
       expect(message).toContain('[redacted]');
       expect(message).not.toContain(secret);
+    });
+
+    it('redacts OpenAI-compatible credentials and endpoint from transport rejections', async () => {
+      const secret = 'literal-compatible-secret';
+      const baseUrl = 'https://private-embedding.example/v1';
+      const fetchMock = vi.fn().mockRejectedValue(
+        new Error(`transport failed for ${baseUrl}/embeddings with credential ${secret}`)
+      );
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      let message = '';
+      try {
+        await generateEmbedding('test', {
+          provider: 'openai-compatible',
+          baseUrl,
+          apiKey: secret,
+          model: 'tei-model',
+          dimensions: 2
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('openai-compatible embedding error: API request failed');
+      expect(message).toContain('transport failed');
+      expect(message).toContain('[redacted]');
+      expect(message).not.toContain(secret);
+      expect(message).not.toContain(baseUrl);
+      expect(message).not.toContain(`${baseUrl}/embeddings`);
     });
 
     it('redacts the exact Gemini credential from SDK rejections', async () => {
@@ -1627,6 +1942,40 @@ describe('embeddings', () => {
       }
     });
 
+    it('times out OpenAI-compatible calls with a safe error deterministically', async () => {
+      vi.useFakeTimers();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const fetchMock = vi.fn((_url: string, _init: RequestInit) => {
+        markStarted();
+        return new Promise(() => {});
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      try {
+        const embeddingPromise = generateEmbedding('test', {
+          provider: 'openai-compatible',
+          baseUrl: 'http://localhost:8080/v1',
+          model: 'tei-model',
+          dimensions: 2,
+          timeoutMs: 1000
+        });
+
+        await started;
+        const rejection = expect(embeddingPromise).rejects.toThrow(
+          'openai-compatible embedding error: API request timed out after 1000ms'
+        );
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await rejection;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('passes caller abort to Mistral requests', async () => {
       const controller = new AbortController();
       let markStarted: () => void = () => {};
@@ -1658,6 +2007,44 @@ describe('embeddings', () => {
         'https://api.mistral.ai/v1/embeddings',
         expect.objectContaining({
           signal: expect.any(AbortSignal)
+        })
+      );
+    });
+
+    it('passes caller abort to OpenAI-compatible requests', async () => {
+      const controller = new AbortController();
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+        markStarted();
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        });
+      });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      const embeddingPromise = generateEmbedding('test', {
+        provider: 'openai-compatible',
+        baseUrl: 'http://localhost:8080/v1',
+        model: 'tei-model',
+        dimensions: 2,
+        signal: controller.signal
+      });
+
+      await started;
+      controller.abort();
+
+      await expect(embeddingPromise).rejects.toThrow('openai-compatible embedding error: API request was aborted');
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:8080/v1/embeddings',
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          redirect: 'error'
         })
       );
     });

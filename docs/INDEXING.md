@@ -174,6 +174,6 @@ Many projects wire indexing into a dedicated script and call it before their sit
 ## Runtime Notes
 
 - local embeddings may download and cache a model on the first run
-- Node users need `@libsql/client` installed alongside the package
+- Node users need `@libsql/client` installed alongside the package, at `^0.15.0 || ^0.17.0`; the packaged build is smoke-tested against both arms (`0.15.15` and `0.17.4`), which covers table and vector-index creation. `batch()` rollback behaves identically on both at the contract level, though its error text differs — see [Version differences](./TROUBLESHOOTING.md#libsqlclient-version-differences). Upgrading the client is not a prerequisite for upgrading this package. Deno/JSR users are not covered by that range and should pin the client themselves — see [Install](../README.md#install)
 - hosted providers send indexed or queried text to external services
 - the repository validates package build and `deno check`, but indexing still depends on filesystem access

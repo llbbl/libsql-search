@@ -23,6 +23,7 @@ References:
 - if dimensions stay the same but provider, model, endpoint, model revision, pooling, normalization, or input formatting changes, fully reindex anyway
 - never mix two embedding spaces in one table
 - prefer a parallel table migration because `indexContent()` replaces the whole target table, so an in-place rebuild leaves no way back to the old vectors
+- upgrading `@libsql/client` is not one of these migrations. The client moves bytes; it does not define the embedding space. Moving between the supported `^0.15.0` and `^0.17.0` lines leaves stored vectors, table widths, and the embedding index untouched and needs no reindex. This is checkable rather than merely inferred: `libsql`, the embedded native engine that owns the on-disk `F32_BLOB` format and the vector index, resolves to `0.5.29` under both client lines — the client bump does not move it. See [`@libsql/client` version differences](./TROUBLESHOOTING.md#libsqlclient-version-differences) for the two client-side behaviors that do change.
 
 In practice, this means:
 

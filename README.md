@@ -26,10 +26,20 @@ npm install libsql-search @libsql/client
 ```
 
 ```bash
-deno add jsr:@logan/libsql-search npm:@libsql/client
+deno add jsr:@logan/libsql-search npm:@libsql/client@^0.17.0
 ```
 
 For npm usage, the package requires Node `>=22.12.0`.
+
+**On npm/pnpm**, the peer range is `@libsql/client ^0.15.0 || ^0.17.0`. Both lines are supported: every behavior this package depends on — `vector_top_k()`'s result shape, the vector index error wording that `search()` matches on, and transactional `batch()` rollback — is identical across them, so an existing `0.15.x` install does not have to move. There is no `0.16.x` line upstream, which is why the range is a disjunction rather than a span. The packaged build is smoke-tested against both arms on every release, at the newest release each arm admits (currently `0.15.15` and `0.17.4`).
+
+**On JSR/Deno the range does not apply to you.** `deno.json` declares no dependency on `@libsql/client` — this package imports only its *types* — so the client you `deno add` separately is constrained by nothing on our side, and a plain `deno add npm:@libsql/client` will silently take whatever is newest, including a future major we have never tested. Deno also cannot express our range: `npm:@libsql/client@^0.15.0 || ^0.17.0` is a parse error, as is any `>=`/`<` span. Pin an arm yourself instead:
+
+```bash
+deno add jsr:@logan/libsql-search npm:@libsql/client@^0.17.0
+```
+
+Note for `0.17.x`: the client no longer exports `./package.json`, so `require("@libsql/client/package.json")` throws `ERR_PACKAGE_PATH_NOT_EXPORTED`. Nothing in this package reads it, but tooling of yours that inspected the client manifest by specifier needs a direct `node_modules` path instead. See [`@libsql/client` version differences](./docs/TROUBLESHOOTING.md#libsqlclient-version-differences) for the other upgrade-visible change.
 
 ## Quick Start
 
@@ -99,7 +109,7 @@ await search({ client, query, exact: true });
 
 `exact: true` is the only way to guarantee exactness. Use it for small corpora, for correctness checks against the index path, and for tables that have no vector index.
 
-Requirements: `vector_top_k()` and `libsql_vector_idx()` need a libSQL build with native vector support. The peer dependency is `@libsql/client ^0.15.0`, verified against `0.15.15`; remote Turso/libSQL servers must support vector indexes as well. See the [API reference](./docs/API.md#searchoptions) for full semantics, and [Indexing and operations](./docs/INDEXING.md) for tables created before the index existed.
+Requirements: `vector_top_k()` and `libsql_vector_idx()` need a libSQL build with native vector support. The peer dependency is `@libsql/client ^0.15.0 || ^0.17.0`, verified against `0.15.15` and `0.17.4`; remote Turso/libSQL servers must support vector indexes as well. See the [API reference](./docs/API.md#searchoptions) for full semantics, and [Indexing and operations](./docs/INDEXING.md) for tables created before the index existed.
 
 ## Providers
 

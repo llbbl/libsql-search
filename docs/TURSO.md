@@ -44,19 +44,26 @@ import { createTable, indexContent, search } from "libsql-search";
 const database = await connect("./local.db");
 const client = tursoAdapter(database);
 
-await createTable(client, "articles", 384);
+const embeddingOptions = {
+  provider: "openai-compatible" as const,
+  baseUrl: process.env.EMBEDDING_BASE_URL!,
+  model: "bge-large-en-v1.5",
+  dimensions: 1024,
+};
+
+await createTable(client, "articles", 1024);
 
 await indexContent({
   client,
   contentPath: "./content",
-  embeddingOptions: { provider: "local" },
+  embeddingOptions,
 });
 
 const results = await search({
   client,
   query: "how do I deploy my docs site",
   limit: 5,
-  embeddingOptions: { provider: "local" },
+  embeddingOptions,
 });
 ```
 

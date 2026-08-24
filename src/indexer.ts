@@ -42,7 +42,7 @@ export interface IndexerOptions {
    */
   client: DatabaseClient;
   contentPath: string;
-  embeddingOptions?: EmbeddingOptions;
+  embeddingOptions: EmbeddingOptions;
   fileExtensions?: string[];
   exclude?: string[];
   tableName?: string;
@@ -133,7 +133,7 @@ export async function indexContent(options: IndexerOptions): Promise<IndexResult
   const {
     client,
     contentPath,
-    embeddingOptions = {},
+    embeddingOptions,
     fileExtensions = ['.md', '.markdown'],
     exclude = ['node_modules', '.git', 'dist', 'build'],
     tableName = 'articles',
@@ -143,6 +143,10 @@ export async function indexContent(options: IndexerOptions): Promise<IndexResult
   } = options;
   const database = resolveDatabase(client);
   const quotedTableName = quoteSqlIdentifier(tableName, 'tableName');
+
+  if (embeddingOptions === undefined) {
+    throw new TypeError('embeddingOptions is required');
+  }
 
   // Find all content files, in a deterministic order so that slug collisions
   // and progress reporting do not depend on directory read order

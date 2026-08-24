@@ -9,7 +9,7 @@
 
 Use it when you want:
 
-- one indexing/search API across local and hosted embedding providers
+- one indexing/search API across external embedding providers
 - direct control over vector dimensions, table names, and deployment shape
 - a lightweight library instead of a hosted search product
 
@@ -45,7 +45,7 @@ Note for `0.17.x`: the client no longer exports `./package.json`, so `require("@
 
 ## Quick Start
 
-This example uses the default local provider. Local embeddings run in-process after the initial model download and cache warmup; they are not automatically air-gapped.
+This example uses a separately deployed OpenAI-compatible embedding service. `libsql-search` never loads or hosts an embedding model in-process.
 
 ```ts
 import { createClient } from "@libsql/client";
@@ -56,25 +56,29 @@ const client = createClient({
   authToken: "your-auth-token",
 });
 
-await createTable(client, "articles_local_384", 384);
+const embeddingOptions = {
+  provider: "openai-compatible" as const,
+  baseUrl: process.env.EMBEDDING_BASE_URL!,
+  apiKey: process.env.EMBEDDING_API_KEY,
+  model: "bge-large-en-v1.5",
+  dimensions: 1024,
+};
+
+await createTable(client, "articles_bge_1024", 1024);
 
 await indexContent({
   client,
   contentPath: "./content",
-  tableName: "articles_local_384",
-  embeddingOptions: {
-    provider: "local",
-  },
+  tableName: "articles_bge_1024",
+  embeddingOptions,
 });
 
 const results = await search({
   client,
   query: "how do I deploy my docs site",
-  tableName: "articles_local_384",
+  tableName: "articles_bge_1024",
   limit: 5,
-  embeddingOptions: {
-    provider: "local",
-  },
+  embeddingOptions,
 });
 
 console.log(results.map((result) => ({
@@ -91,7 +95,7 @@ Important behavior:
 - `indexContent()` embeds every document before it touches the database, then replaces the table in one transaction, so a failed rebuild leaves the previous index intact.
 - `indexContent()` throws `IndexingError` when a file fails; pass `failurePolicy: "skip"` to rebuild from the remaining files.
 - `indexContent()` throws `IndexingError` when no source files are found; pass `allowEmptyIndex: true` to intentionally empty the index.
-- Hosted providers send indexed and queried text to external services and may incur provider charges.
+- Every provider sends indexed and queried text to an external service; review that service's privacy, retention, and pricing terms.
 
 ## Search Accuracy And Performance
 
@@ -103,10 +107,10 @@ Two options control the trade-off:
 
 ```ts
 // Widen the index probe to raise recall (default: max(limit * 4, 32))
-await search({ client, query, limit: 10, candidates: 200 });
+await search({ client, query, embeddingOptions, limit: 10, candidates: 200 });
 
 // Bypass the index entirely: exact, but linear in table size
-await search({ client, query, exact: true });
+await search({ client, query, embeddingOptions, exact: true });
 ```
 
 `exact: true` is the only way to guarantee exactness. Use it for small corpora, for correctness checks against the index path, and for tables that have no vector index.
@@ -117,7 +121,6 @@ Requirements: `vector_top_k()` and `libsql_vector_idx()` need a libSQL build wit
 
 Built-in providers:
 
-- `local` with `Xenova/all-MiniLM-L6-v2` at 384 dimensions
 - `cloudflare` with `@cf/baai/bge-m3` at 1024 dimensions
 - `mistral` with `mistral-embed` at 1024 dimensions
 - `gemini` with `gemini-embedding-2` at 128-3072 dimensions, default 3072

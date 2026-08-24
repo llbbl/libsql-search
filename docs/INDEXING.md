@@ -18,13 +18,18 @@ The slug is derived from the file path relative to `contentPath`.
 `indexContent()` replaces the whole target table:
 
 ```ts
+const embeddingOptions = {
+  provider: "openai-compatible" as const,
+  baseUrl: process.env.EMBEDDING_BASE_URL!,
+  model: "bge-large-en-v1.5",
+  dimensions: 1024,
+};
+
 await indexContent({
   client,
   contentPath: "./content",
-  tableName: "articles_local_384",
-  embeddingOptions: {
-    provider: "local",
-  },
+  tableName: "articles_bge_1024",
+  embeddingOptions,
 });
 ```
 
@@ -69,7 +74,7 @@ Both are governed by `failurePolicy` like any other build failure, so they abort
 import { indexContent, IndexingError } from "libsql-search";
 
 try {
-  await indexContent({ client, contentPath: "./content" });
+  await indexContent({ client, contentPath: "./content", embeddingOptions });
 } catch (error) {
   if (error instanceof IndexingError) {
     for (const failure of error.failures) {
@@ -87,6 +92,7 @@ By default one bad file aborts the whole rebuild. To index everything that can b
 const result = await indexContent({
   client,
   contentPath: "./content",
+  embeddingOptions,
   failurePolicy: "skip",
 });
 
@@ -105,6 +111,7 @@ An empty source directory throws by default, because silently leaving stale rows
 await indexContent({
   client,
   contentPath: "./content",
+  embeddingOptions,
   allowEmptyIndex: true,
 });
 ```
@@ -173,7 +180,6 @@ Many projects wire indexing into a dedicated script and call it before their sit
 
 ## Runtime Notes
 
-- local embeddings may download and cache a model on the first run
 - Node users need `@libsql/client` installed alongside the package, at `^0.15.0 || ^0.17.0`; the packaged build is smoke-tested against both arms (`0.15.15` and `0.17.4`), which covers table and vector-index creation. `batch()` rollback behaves identically on both at the contract level, though its error text differs — see [Version differences](./TROUBLESHOOTING.md#libsqlclient-version-differences). Upgrading the client is not a prerequisite for upgrading this package. Deno/JSR users are not covered by that range and should pin the client themselves — see [Install](../README.md#install)
-- hosted providers send indexed or queried text to external services
+- all embedding providers send indexed or queried text to external services; this library never loads a model in-process
 - the repository validates package build and `deno check`, but indexing still depends on filesystem access

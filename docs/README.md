@@ -2,7 +2,7 @@
 
 This directory holds the longer-form reference material for `libsql-search`.
 
-- [Provider selection and configuration](./PROVIDERS.md): compare local, hosted, and custom embedding providers before you build an index
+- [Provider selection and configuration](./PROVIDERS.md): compare external and custom embedding providers before you build an index
 - [Integration examples](./INTEGRATIONS.md): reusable provider flow plus Astro and Next.js examples
 - [Migration and reindexing guide](./MIGRATIONS.md): table-width changes, provider/model swaps, and safe cutovers
 - [API reference](./API.md): exported functions, option shapes, and result data

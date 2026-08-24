@@ -29,7 +29,7 @@ export interface SearchOptions {
   query: string;
   limit?: number;
   tableName?: string;
-  embeddingOptions?: EmbeddingOptions;
+  embeddingOptions: EmbeddingOptions;
   /**
    * How many candidates to pull from the vector index before the exact
    * re-rank. Must be an integer from `limit` through {@link MAX_SEARCH_CANDIDATES}.
@@ -128,7 +128,7 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
     query,
     limit = 10,
     tableName = 'articles',
-    embeddingOptions = {},
+    embeddingOptions,
     candidates,
     exact = false
   } = options;
@@ -144,6 +144,10 @@ export async function search(options: SearchOptions): Promise<SearchResult[]> {
     'embedding index name'
   );
   const candidateCount = normalizeSearchCandidates(candidates, resultLimit);
+
+  if (embeddingOptions === undefined) {
+    throw new TypeError('embeddingOptions is required');
+  }
 
   // Generate embedding for query
   const queryEmbedding = await generateEmbedding(query, {

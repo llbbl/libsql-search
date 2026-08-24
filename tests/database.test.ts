@@ -21,7 +21,10 @@ import {
 import { createTable, indexContent } from '../src/indexer.js';
 import { search, getFolders } from '../src/search.js';
 import { tursoAdapter } from '../src/turso.js';
-import { resetHuggingFaceTransformersMock } from './huggingface-transformers.mock.js';
+import {
+  resetEmbeddingServiceMock,
+  TEST_EMBEDDING_OPTIONS
+} from './embedding-service.mock.js';
 
 interface RecordedWrite {
   sql: string;
@@ -65,6 +68,10 @@ function createRecordingAdapter(supportsVectorIndex: boolean): DatabaseAdapter &
 }
 
 describe('database boundary', () => {
+  beforeEach(() => {
+    resetEmbeddingServiceMock();
+  });
+
   describe('isDatabaseAdapter', () => {
     it('should recognize adapters built by this package', () => {
       expect(isDatabaseAdapter(createLibsqlAdapter({} as Client))).toBe(true);
@@ -190,7 +197,7 @@ describe('database boundary', () => {
       await search({
         client: adapter,
         query: 'TypeScript',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(adapter.queries).toHaveLength(1);
@@ -203,7 +210,7 @@ describe('database boundary', () => {
       await search({
         client: adapter,
         query: 'TypeScript',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(adapter.queries).toHaveLength(1);
@@ -469,13 +476,13 @@ describe('database boundary', () => {
     const testDir = join(process.cwd(), 'test-content-adapter');
 
     beforeEach(async () => {
-      resetHuggingFaceTransformersMock();
+      resetEmbeddingServiceMock();
       await mkdir(testDir, { recursive: true });
     });
 
     afterEach(async () => {
       await rm(testDir, { recursive: true, force: true });
-      resetHuggingFaceTransformersMock();
+      resetEmbeddingServiceMock();
     });
 
     it('should hand the whole replacement to the adapter as one atomic write', async () => {
@@ -487,7 +494,7 @@ describe('database boundary', () => {
       const result = await indexContent({
         client: adapter,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(result.success).toBe(2);

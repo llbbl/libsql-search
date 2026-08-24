@@ -500,12 +500,17 @@ describeTurso('turso database backend', () => {
      * calls close(). This proves the real driver's statements actually accept
      * it on the paths users take, including inside an open transaction.
      */
-    function createCloseTrackingHandle(): { handle: TursoDatabase; closed: number } {
-      const tracker = { closed: 0 };
+    function createCloseTrackingHandle(): {
+      handle: TursoDatabase;
+      prepared: number;
+      closed: number;
+    } {
+      const tracker = { prepared: 0, closed: 0 };
 
       const handle: TursoDatabase = {
         exec: (sql: string) => database.exec(sql),
         prepare: (sql: string): TursoStatement => {
+          tracker.prepared += 1;
           const statement = database.prepare(sql) as TursoStatement & { close?(): unknown };
 
           return {
@@ -521,38 +526,48 @@ describeTurso('turso database backend', () => {
 
       return {
         handle,
+        get prepared() {
+          return tracker.prepared;
+        },
         get closed() {
           return tracker.closed;
         }
       };
     }
 
-    it('should close the statement behind a real search()', async () => {
+    it('should retain the statement behind a real search until disposal', async () => {
       await createTable(client);
       await insertTestArticle({ slug: 'a', title: 'A', content: 'TypeScript' });
 
       const tracking = createCloseTrackingHandle();
+      const tracked = tursoAdapter(tracking.handle);
 
       await search({
-        client: tursoAdapter(tracking.handle),
+        client: tracked,
         query: 'TypeScript',
         embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
-      // search() issues exactly one query, so one prepare and one close. An SSR
-      // site calls this per request; leaking here grows the process without
-      // bound.
+      expect(tracking.prepared).toBe(1);
+      expect(tracking.closed).toBe(0);
+
+      await tracked.dispose();
       expect(tracking.closed).toBe(1);
     }, 30000);
 
-    it('should close the statements behind a real retrieval helper', async () => {
+    it('should retain the statement behind a real retrieval helper until disposal', async () => {
       await createTable(client);
       await insertTestArticle({ slug: 'a', title: 'A', content: 'TypeScript' });
 
       const tracking = createCloseTrackingHandle();
-      const folders = await getFolders(tursoAdapter(tracking.handle));
+      const tracked = tursoAdapter(tracking.handle);
+      const folders = await getFolders(tracked);
 
       expect(folders).toEqual(['root']);
+      expect(tracking.prepared).toBe(1);
+      expect(tracking.closed).toBe(0);
+
+      await tracked.dispose();
       expect(tracking.closed).toBe(1);
     }, 30000);
 
@@ -562,9 +577,10 @@ describeTurso('turso database backend', () => {
       await writeFile(join(testDir, 'beta.md'), '---\ntitle: Beta\n---\nContent');
 
       const tracking = createCloseTrackingHandle();
+      const tracked = tursoAdapter(tracking.handle);
 
       await indexContent({
-        client: tursoAdapter(tracking.handle),
+        client: tracked,
         contentPath: testDir,
         embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
@@ -572,8 +588,12 @@ describeTurso('turso database backend', () => {
       // One DELETE plus one cached INSERT, both closed after COMMIT. Closing a
       // statement bound to a transaction that already committed is safe; the
       // committed rows below prove the close did not disturb the write.
+      expect(tracking.prepared).toBe(2);
       expect(tracking.closed).toBe(2);
       expect(await indexedTitles()).toEqual(['Alpha', 'Beta']);
+
+      await tracked.dispose();
+      expect(tracking.closed).toBe(2);
     }, 30000);
 
     it('should survive repeated queries on one handle', async () => {
@@ -592,7 +612,56 @@ describeTurso('turso database backend', () => {
         expect(folders).toEqual(['root']);
       }
 
-      expect(tracking.closed).toBe(250);
+      // Call count grows while the native statement count stays constant.
+      // Reverting to prepare-per-call makes this assertion fail at 250.
+      expect(tracking.prepared).toBe(1);
+      expect(tracking.closed).toBe(0);
+
+      await tracked.dispose();
+      expect(tracking.closed).toBe(1);
+    }, 30000);
+
+    it('should serialize concurrent rebinds on one cached real statement', async () => {
+      const tracking = createCloseTrackingHandle();
+      const tracked = tursoAdapter(tracking.handle);
+      const expected = Array.from({ length: 250 }, (_, index) => index);
+
+      const rows = await Promise.all(
+        expected.map(value => tracked.executeQuery('SELECT ? AS value', [value]))
+      );
+
+      expect(rows.map(result => result[0]?.value)).toEqual(expected);
+      expect(tracking.prepared).toBe(1);
+      expect(tracking.closed).toBe(0);
+
+      await tracked.dispose();
+      expect(tracking.closed).toBe(1);
+    }, 30000);
+
+    it('should reuse a cached real query after an intervening rebuild transaction', async () => {
+      await createTable(client);
+      const tracking = createCloseTrackingHandle();
+      const tracked = tursoAdapter(tracking.handle);
+
+      await expect(getFolders(tracked)).resolves.toEqual([]);
+      expect(tracking.prepared).toBe(1);
+
+      await writeFile(join(testDir, 'alpha.md'), '---\ntitle: Alpha\n---\nContent');
+      await indexContent({
+        client: tracked,
+        contentPath: testDir,
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
+      });
+
+      // Two transaction-local statements were prepared and closed. The
+      // original getFolders statement remains cached and sees committed rows.
+      expect(tracking.prepared).toBe(3);
+      expect(tracking.closed).toBe(2);
+      await expect(getFolders(tracked)).resolves.toEqual(['root']);
+      expect(tracking.prepared).toBe(3);
+
+      await tracked.dispose();
+      expect(tracking.closed).toBe(3);
     }, 30000);
   });
 

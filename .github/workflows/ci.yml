@@ -134,9 +134,3 @@ jobs:
       - name: Run dependency review
         uses: actions/dependency-review-action@v4
         if: github.event_name == 'pull_request'
-        with:
-          # Upstream baseline from @huggingface/transformers 4.2.0 native runtime deps.
-          # Keep this narrow and remove entries when HF/onnxruntime/sharp ship patched versions.
-          allow-ghsas: >-
-            GHSA-xcpc-8h2w-3j85,
-            GHSA-f88m-g3jw-g9cj

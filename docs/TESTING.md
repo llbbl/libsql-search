@@ -9,30 +9,31 @@ Routine unit tests and CI should not make live embedding-provider calls and shou
 - validate option handling and response parsing with mocks first
 - assert failures happen before network calls when configuration is invalid
 
-The current test suite follows that pattern in `tests/embeddings.test.ts` and [`tests/huggingface-transformers.mock.ts`](../tests/huggingface-transformers.mock.ts).
+The current test suite follows that pattern in `tests/embeddings.test.ts` and [`tests/embedding-service.mock.ts`](../tests/embedding-service.mock.ts).
 
-## Local Provider Mocks
+## Shared Embedding Service Mock
 
-The local provider should use a lightweight Transformers.js mock instead of downloading the real model during routine tests.
+Indexer, search, and database tests use a deterministic OpenAI-compatible service mock. This keeps the tests on the same external-service boundary as production without making network calls.
 
 ```ts
 import {
-  huggingFaceTransformersMock,
-  resetHuggingFaceTransformersMock,
-} from "./huggingface-transformers.mock.js";
+  embeddingServiceMock,
+  resetEmbeddingServiceMock,
+  TEST_EMBEDDING_OPTIONS,
+} from "./embedding-service.mock.js";
 
 beforeEach(() => {
-  resetHuggingFaceTransformersMock();
+  resetEmbeddingServiceMock();
 });
 ```
 
-The repository source file is `huggingface-transformers.mock.ts`. The example keeps the `.js` import suffix because this repo's ESM TypeScript source uses explicit `.js` relative imports that resolve after compilation.
+The example keeps the `.js` import suffix because this repo's ESM TypeScript source uses explicit `.js` relative imports that resolve after compilation.
 
 Test the contract you care about:
 
-- the library requests `Xenova/all-MiniLM-L6-v2`
-- the call uses `pooling: "mean"` and `normalize: true`
-- non-`384` local dimensions fail before runtime loading
+- indexing and querying use the same endpoint, model, and dimensions
+- provider failures remain classified as build-stage failures
+- queued deterministic vectors exercise exact ranking and tie behavior
 
 ## HTTP Provider Mocks
 
@@ -116,9 +117,9 @@ Apply the same pattern to `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `CLOUDFLARE_ACCOU
 Prefer tests that prove bad inputs fail locally:
 
 - unknown provider
+- missing provider
 - missing provider credentials
 - blank credentials where trimming is expected
-- invalid local dimensions
 - invalid Gemini dimensions
 - invalid `openai-compatible` `baseUrl`
 - invalid `openai-compatible` `batchSize`

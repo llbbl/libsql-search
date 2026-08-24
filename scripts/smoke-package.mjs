@@ -115,7 +115,6 @@ async function writeConsumerProject(directory) {
       'onlyBuiltDependencies:',
       '  - esbuild',
       '  - protobufjs',
-      '  - sharp',
       '',
     ].join('\n'),
   );
@@ -319,7 +318,6 @@ async function smokeAgainstClientArm(options) {
       'add',
       '--allow-build=esbuild',
       '--allow-build=protobufjs',
-      '--allow-build=sharp',
       tarballPath,
       arm.spec,
     ],

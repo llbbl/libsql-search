@@ -28,7 +28,10 @@ import {
   type TursoDatabase,
   type TursoStatement
 } from '../src/turso.js';
-import { resetHuggingFaceTransformersMock } from './huggingface-transformers.mock.js';
+import {
+  resetEmbeddingServiceMock,
+  TEST_EMBEDDING_OPTIONS
+} from './embedding-service.mock.js';
 
 /** A connected handle, which additionally closes. */
 type TursoConnection = TursoDatabase & { close(): void };
@@ -71,7 +74,7 @@ describeTurso('turso database backend', () => {
   let client: DatabaseAdapter;
 
   beforeEach(async () => {
-    resetHuggingFaceTransformersMock();
+    resetEmbeddingServiceMock();
     database = await connect!(':memory:');
     client = tursoAdapter(database);
     await mkdir(testDir, { recursive: true });
@@ -80,7 +83,7 @@ describeTurso('turso database backend', () => {
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
     database.close();
-    resetHuggingFaceTransformersMock();
+    resetEmbeddingServiceMock();
   });
 
   async function query(sql: string, args?: unknown): Promise<Array<Record<string, unknown>>> {
@@ -113,10 +116,7 @@ describeTurso('turso database backend', () => {
     folder?: string;
     tags?: string[];
   }): Promise<void> {
-    const embedding = await generateEmbedding(data.content, {
-      provider: 'local',
-      dimensions: 384
-    });
+    const embedding = await generateEmbedding(data.content, TEST_EMBEDDING_OPTIONS);
 
     await database
       .prepare(
@@ -283,7 +283,7 @@ describeTurso('turso database backend', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(result.success).toBe(2);
@@ -300,13 +300,10 @@ describeTurso('turso database backend', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
-      const embedding = await generateEmbedding('TypeScript', {
-        provider: 'local',
-        dimensions: 384
-      });
+      const embedding = await generateEmbedding('TypeScript', TEST_EMBEDDING_OPTIONS);
 
       const rows = await query(
         'SELECT vector_distance_cos(embedding, vector32(?)) AS distance FROM articles',
@@ -322,7 +319,7 @@ describeTurso('turso database backend', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       await rm(join(testDir, 'first.md'));
@@ -330,7 +327,7 @@ describeTurso('turso database backend', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(await indexedTitles()).toEqual(['Second']);
@@ -346,7 +343,7 @@ describeTurso('turso database backend', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       await rm(join(testDir, 'first.md'));
@@ -359,7 +356,7 @@ describeTurso('turso database backend', () => {
         indexContent({
           client: failing,
           contentPath: testDir,
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         })
       );
 
@@ -378,7 +375,7 @@ describeTurso('turso database backend', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       await rm(join(testDir, 'first.md'));
@@ -390,7 +387,7 @@ describeTurso('turso database backend', () => {
         indexContent({
           client: rejecting,
           contentPath: testDir,
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         })
       );
 
@@ -426,7 +423,7 @@ describeTurso('turso database backend', () => {
       await indexContent({
         client: tursoAdapter(recording),
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(batchCalls).toHaveLength(0);
@@ -456,7 +453,7 @@ describeTurso('turso database backend', () => {
       const result = await indexContent({
         client: tursoAdapter(recording),
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(result.success).toBe(5);
@@ -484,7 +481,7 @@ describeTurso('turso database backend', () => {
         indexContent({
           client: tursoAdapter(recording),
           contentPath: testDir,
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         })
       );
 
@@ -539,7 +536,7 @@ describeTurso('turso database backend', () => {
       await search({
         client: tursoAdapter(tracking.handle),
         query: 'TypeScript',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       // search() issues exactly one query, so one prepare and one close. An SSR
@@ -569,7 +566,7 @@ describeTurso('turso database backend', () => {
       await indexContent({
         client: tursoAdapter(tracking.handle),
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       // One DELETE plus one cached INSERT, both closed after COMMIT. Closing a
@@ -619,7 +616,7 @@ describeTurso('turso database backend', () => {
       const results = await search({
         client,
         query: 'TypeScript programming',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results.map(result => result.slug)).toEqual(['exact-match', 'unrelated']);
@@ -645,7 +642,7 @@ describeTurso('turso database backend', () => {
       await search({
         client: tursoAdapter(recording),
         query: 'JavaScript',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(prepared).toHaveLength(1);
@@ -662,7 +659,7 @@ describeTurso('turso database backend', () => {
         client,
         query: 'TypeScript',
         limit: 2,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results).toHaveLength(2);
@@ -675,7 +672,7 @@ describeTurso('turso database backend', () => {
           query: 'TypeScript',
           limit: 10,
           candidates: 5,
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         })
       ).rejects.toThrow('Invalid search candidates');
     }, 30000);
@@ -691,7 +688,7 @@ describeTurso('turso database backend', () => {
       const results = await search({
         client,
         query: 'TypeScript',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results[0].tags).toEqual(['ts', 'guide']);

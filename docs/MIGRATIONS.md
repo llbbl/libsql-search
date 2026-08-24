@@ -27,7 +27,7 @@ References:
 
 In practice, this means:
 
-- `384 local` and `1024 Mistral` can never share a table
+- a legacy `384` embedding space and `1024 Mistral` can never share a table
 - `1024 Cloudflare` and `1024 Mistral` still need separate rebuilds because equal width does not make the vectors compatible
 - a custom endpoint change at the same width still needs a new table because the model or serving stack may have changed
 
@@ -84,14 +84,14 @@ Re-running `createTable()` with the table's existing width is the fix. It is ide
 
 ```ts
 // Same name and same width as the existing table
-await createTable(client, "articles_local_384", 384);
+await createTable(client, "articles_legacy_384", 384);
 ```
 
 Equivalently, in SQL:
 
 ```sql
-CREATE INDEX IF NOT EXISTS "articles_local_384_embedding_idx"
-ON "articles_local_384"(libsql_vector_idx(embedding));
+CREATE INDEX IF NOT EXISTS "articles_legacy_384_embedding_idx"
+ON "articles_legacy_384"(libsql_vector_idx(embedding));
 ```
 
 Reindexing does not create the index; `indexContent()` only replaces rows. Any new table created by `createTable()` as part of a migration already has it, so this applies only to pre-existing tables you are carrying forward. Until the index exists, `search({ ..., exact: true })` keeps queries working on the exact full-scan path.
@@ -100,7 +100,7 @@ Reindexing does not create the index; `indexContent()` only replaces rows. Any n
 
 | From | To | Why a rebuild is required | Recommended table move |
 | --- | --- | --- | --- |
-| Legacy padded local `768` | Native local `384` | Old tables stored `384` model values plus zero padding; current local provider is a native `384`-dimension space | Build into `articles_local_384`, validate, then retire the legacy table |
+| Legacy in-process Transformers.js index | Any external provider | The runtime and provider were removed; every replacement service has its own embedding space | Build a parallel table named for the external provider/model, validate, then retire the legacy table |
 | Any `768` space | Any `1024` space | Width changes from `F32_BLOB(768)` to `F32_BLOB(1024)` | Create a new `1024` table and reindex |
 | Cloudflare `1024` | Mistral `1024` | Width stays the same, but provider/model space changes | Use a parallel `1024` table such as `articles_mistral_1024` |
 | Mistral `1024` | Cloudflare `1024` | Same reason in reverse | Use a parallel `1024` table such as `articles_cf_bgem3_1024` |
@@ -111,21 +111,21 @@ Reindexing does not create the index; `indexContent()` only replaces rows. Any n
 
 ## Scenario Notes
 
-### Legacy Local `768` To Native Local `384`
+### Legacy In-Process Embeddings To An External Service
 
-Earlier local migrations sometimes relied on zero padding to fit a `768`-wide table. The current local adapter emits the model's native `384` dimensions and rejects any other local dimension count.
+Versions that exposed the in-process Transformers.js provider produced a separate embedding space that this release can no longer query. Choose an external provider or separately deployed OpenAI-compatible service and rebuild every vector into a new table.
 
 Safe path:
 
 ```ts
-await createTable(client, "articles_local_384", 384);
+await createTable(client, "articles_bge_1024", 1024);
 ```
 
-Reindex into `articles_local_384`; do not keep writing new local vectors into the legacy padded table.
+Reindex into `articles_bge_1024` with the external service configuration; do not mix its vectors with the legacy table.
 
 ### `768` To `1024`
 
-Any move from `768` dimensions to `1024` dimensions changes the schema width. Examples include a legacy local table moving to Cloudflare or Mistral.
+Any move from `768` dimensions to `1024` dimensions changes the schema width. Examples include a legacy table moving to Cloudflare, Mistral, or a 1024-dimensional OpenAI-compatible service.
 
 ```ts
 await createTable(client, "articles_mistral_1024", 1024);

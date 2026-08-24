@@ -4,16 +4,12 @@ import esbuild from 'rollup-plugin-esbuild';
 
 const external = [
   '@libsql/client',
-  '@huggingface/transformers',
   'gray-matter',
   '@google/genai',
   // Never bundled, and never imported by our source either. Listed so that a
   // future import of it fails the build loudly instead of being inlined into
   // an entry point that must not resolve a native package.
   '@tursodatabase/database',
-  'onnxruntime-node',
-  'onnxruntime-web',
-  'sharp',
   'fs',
   'path',
   'fs/promises',

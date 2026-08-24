@@ -113,7 +113,7 @@ Indexes Markdown files from a directory on disk.
 interface IndexerOptions {
   client: Client | DatabaseAdapter;
   contentPath: string;
-  embeddingOptions?: EmbeddingOptions;
+  embeddingOptions: EmbeddingOptions;
   fileExtensions?: string[];
   exclude?: string[];
   tableName?: string;
@@ -187,7 +187,16 @@ class IndexingError extends Error {
 import { indexContent, IndexingError } from "libsql-search";
 
 try {
-  await indexContent({ client, contentPath: "./content" });
+  await indexContent({
+    client,
+    contentPath: "./content",
+    embeddingOptions: {
+      provider: "openai-compatible",
+      baseUrl: process.env.EMBEDDING_BASE_URL!,
+      model: "bge-large-en-v1.5",
+      dimensions: 1024,
+    },
+  });
 } catch (error) {
   if (error instanceof IndexingError) {
     console.error(error.phase, error.failures);
@@ -212,7 +221,7 @@ interface SearchOptions {
   query: string;
   limit?: number;
   tableName?: string;
-  embeddingOptions?: EmbeddingOptions;
+  embeddingOptions: EmbeddingOptions;
   candidates?: number;
   exact?: boolean;
 }
@@ -246,7 +255,7 @@ Controls how many rows the index returns for the exact re-rank. It must be an in
 
 ```ts
 // Trade query cost for recall on a large corpus
-const results = await search({ client, query, limit: 10, candidates: 200 });
+const results = await search({ client, query, embeddingOptions, limit: 10, candidates: 200 });
 ```
 
 `candidates` has no effect when `exact` is `true` — that path scans every row — but it is **still validated**. `search({ exact: true, limit: 10, candidates: 5 })` throws, exactly as it would on the index path. Validity does not depend on which path a call happens to take.
@@ -262,7 +271,7 @@ Related exported constants:
 Set `exact: true` to bypass the index and score every row in the table.
 
 ```ts
-const results = await search({ client, query, exact: true });
+const results = await search({ client, query, embeddingOptions, exact: true });
 ```
 
 This is the guaranteed-exact path: it computes `vector_distance_cos` for every row with a non-`NULL` embedding, sorts by `(distance, id)`, and trims to `limit`. Cost grows linearly with table size, so it is intended for small corpora, correctness checks against the index path, and tables that have no vector index.
@@ -330,8 +339,7 @@ All retrieval helpers validate `tableName` before executing SQL, and all of them
 
 ```ts
 interface EmbeddingOptions {
-  provider?:
-    | "local"
+  provider:
     | "cloudflare"
     | "mistral"
     | "gemini"
@@ -353,7 +361,7 @@ interface EmbeddingOptions {
 
 Important option rules:
 
-- `provider` defaults to `local`
+- `provider` is required; every provider is an external service
 - `maxLength` defaults to `8000`
 - `timeoutMs` defaults to `30000`
 - `model` is only used by `openai-compatible`
@@ -364,7 +372,6 @@ Important option rules:
 
 Dimension rules:
 
-- local: fixed `384`
 - Cloudflare: fixed `1024`
 - Mistral: fixed `1024`
 - Gemini: default `3072`, allowed integer range `128-3072`
@@ -373,7 +380,7 @@ Dimension rules:
 
 See [Provider matrix and credential rules](./PROVIDERS.md) for the canonical provider table.
 
-### `generateEmbedding(text, options?)`
+### `generateEmbedding(text, options)`
 
 Generates one embedding vector.
 
@@ -385,15 +392,15 @@ const embedding = await generateEmbedding("deploy docs", {
 });
 ```
 
-### `generateEmbeddings(texts, options?)`
+### `generateEmbeddings(texts, options)`
 
 Generates an ordered batch of embeddings.
 
-- empty batches return `[]` without loading the local model or making a hosted call
+- empty batches return `[]` without configuring credentials or making a provider call
 - OpenAI batches above `2048` inputs are rejected before network work
 - `openai-compatible` batches are chunked sequentially according to `batchSize`
 
-### `createEmbeddingProvider(options?)`
+### `createEmbeddingProvider(options)`
 
 Creates a provider client with immutable metadata and an `embed(texts, options?)` method.
 
@@ -413,7 +420,7 @@ Provider clients return a rich `EmbeddingBatchResult`; the compatibility helpers
 
 Hosted provider clients are scoped to their current options. The library does not reuse a Cloudflare, Mistral, Gemini, or OpenAI client across different credential sets or configurations.
 
-### `getEmbeddingProviderMetadata(options?)`
+### `getEmbeddingProviderMetadata(options)`
 
 Returns the same metadata exposed by `createEmbeddingProvider(options).metadata` without resolving hosted-provider credentials.
 
@@ -422,7 +429,6 @@ Metadata shape:
 ```ts
 interface EmbeddingProviderMetadata {
   name:
-    | "local"
     | "cloudflare"
     | "mistral"
     | "gemini"
@@ -451,7 +457,6 @@ Batch interpretation:
 interface EmbeddingBatchResult {
   embeddings: number[][];
   provider:
-    | "local"
     | "cloudflare"
     | "mistral"
     | "gemini"
@@ -474,7 +479,7 @@ Validates provider responses before they reach the database:
 
 ### `padEmbedding(embedding, targetDimensions)`
 
-Pads or truncates a vector to the target width. This is exported for compatibility and migration workflows, but the current local provider uses its native `384` dimensions rather than padding by default.
+Pads or truncates a vector to the target width. This is exported for compatibility and migration workflows; provider adapters otherwise validate and preserve the vectors returned by their external service.
 
 ### `prepareTextForEmbedding(fields)`
 

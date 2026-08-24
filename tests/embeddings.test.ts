@@ -1,10 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { EmbeddingOptions } from '../src/embeddings.js';
-import {
-  LOCAL_TEST_DIMENSIONS,
-  huggingFaceTransformersMock,
-  resetHuggingFaceTransformersMock
-} from './huggingface-transformers.mock.js';
 
 type EmbeddingsModule = typeof import('../src/embeddings.js');
 
@@ -76,7 +71,6 @@ describe('embeddings', () => {
     delete process.env.CLOUDFLARE_ACCOUNT_ID;
     delete process.env.CLOUDFLARE_API_TOKEN;
     vi.resetModules();
-    resetHuggingFaceTransformersMock();
     ({
       createEmbeddingProvider,
       generateEmbedding,
@@ -192,37 +186,32 @@ describe('embeddings', () => {
   });
 
   describe('generateEmbedding', () => {
-    it('should generate local embeddings with native dimensions', async () => {
-      const text = 'This is a test sentence for embedding generation';
-      const embedding = await generateEmbedding(text, {
-        provider: 'local'
-      });
-
-      expect(embedding).toBeInstanceOf(Array);
-      expect(embedding.length).toBe(LOCAL_TEST_DIMENSIONS);
-      expect(embedding.every(n => typeof n === 'number')).toBe(true);
-      expect(huggingFaceTransformersMock.pipeline).toHaveBeenCalledWith(
-        'feature-extraction',
-        'Xenova/all-MiniLM-L6-v2'
-      );
-      expect(huggingFaceTransformersMock.calls[0]).toEqual({
-        text,
-        options: {
-          pooling: 'mean',
-          normalize: true
-        }
-      });
-    });
-
     it('should truncate long text to maxLength', async () => {
       const longText = 'a'.repeat(10000);
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data: [{ index: 0, embedding: [1, 2] }] })
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
       const embedding = await generateEmbedding(longText, {
-        provider: 'local',
+        provider: 'openai-compatible',
+        baseUrl: 'https://embeddings.example.test/v1',
+        model: 'test-model',
+        dimensions: 2,
         maxLength: 100
       });
 
-      expect(embedding).toBeInstanceOf(Array);
-      expect(huggingFaceTransformersMock.calls[0]?.text).toHaveLength(100);
+      expect(embedding).toEqual([1, 2]);
+      const request = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as { input: string[] };
+      expect(request.input[0]).toHaveLength(100);
+    });
+
+    it('should require an explicit provider', async () => {
+      await expect(generateEmbedding('test', {} as EmbeddingOptions)).rejects.toThrow(
+        'Embedding provider is required'
+      );
     });
 
     it('should throw error for unknown provider', async () => {
@@ -454,25 +443,6 @@ describe('embeddings', () => {
   describe('provider contract', () => {
     it('exposes stable provider metadata without provider calls', () => {
       expect(getEmbeddingProviderMetadata({
-        provider: 'local'
-      })).toEqual({
-        name: 'local',
-        model: 'Xenova/all-MiniLM-L6-v2',
-        dimensions: 384,
-        batch: { mode: 'sequential' }
-      });
-
-      expect(getEmbeddingProviderMetadata({
-        provider: 'local',
-        dimensions: 384
-      })).toEqual({
-        name: 'local',
-        model: 'Xenova/all-MiniLM-L6-v2',
-        dimensions: 384,
-        batch: { mode: 'sequential' }
-      });
-
-      expect(getEmbeddingProviderMetadata({
         provider: 'gemini'
       })).toEqual({
         name: 'gemini',
@@ -523,23 +493,19 @@ describe('embeddings', () => {
     });
 
     it('returns immutable provider metadata', () => {
-      const metadata = getEmbeddingProviderMetadata({ provider: 'local' });
+      const metadata = getEmbeddingProviderMetadata({ provider: 'gemini' });
 
       expect(Object.isFrozen(metadata)).toBe(true);
       expect(Object.isFrozen(metadata.batch)).toBe(true);
       expect(() => {
         (metadata as { dimensions: number }).dimensions = 768;
       }).toThrow(TypeError);
-      expect(metadata.dimensions).toBe(384);
+      expect(metadata.dimensions).toBe(3072);
     });
 
     it('returns empty batches without provider setup or network work', async () => {
       const fetchMock = vi.fn();
       vi.stubGlobal('fetch', fetchMock);
-
-      await expect(generateEmbeddings([], {
-        provider: 'local'
-      })).resolves.toEqual([]);
 
       await expect(generateEmbeddings([], {
         provider: 'openai'
@@ -563,137 +529,6 @@ describe('embeddings', () => {
 
       expect(fetchMock).not.toHaveBeenCalled();
       expect(geminiMock.keys).toEqual([]);
-      expect(huggingFaceTransformersMock.pipeline).not.toHaveBeenCalled();
-    });
-
-    it.each([768, 383, 385, 384.5, Number.NaN])('rejects invalid local dimensions %s before provider setup', async (dimensions) => {
-      const expected = /Xenova\/all-MiniLM-L6-v2 returns 384 dimensions/;
-
-      expect(() => getEmbeddingProviderMetadata({
-        provider: 'local',
-        dimensions
-      })).toThrow(expected);
-
-      await expect(generateEmbedding('test', {
-        provider: 'local',
-        dimensions
-      })).rejects.toThrow(expected);
-
-      expect(huggingFaceTransformersMock.pipeline).not.toHaveBeenCalled();
-    });
-
-    it('returns native local vectors exactly without zero padding', async () => {
-      const vector = Array.from({ length: LOCAL_TEST_DIMENSIONS }, (_value, index) => index + 1);
-      huggingFaceTransformersMock.queuedVectors = [vector];
-
-      await expect(generateEmbedding('native vector', {
-        provider: 'local'
-      })).resolves.toEqual(vector);
-    });
-
-    it.each([
-      {
-        name: '383 dimensions',
-        vector: new Array(383).fill(1),
-        expected: /embedding 0 has 383 dimensions, expected 384/
-      },
-      {
-        name: '385 dimensions',
-        vector: new Array(385).fill(1),
-        expected: /embedding 0 has 385 dimensions, expected 384/
-      },
-      {
-        name: 'NaN value',
-        vector: [Number.NaN, ...new Array(383).fill(1)],
-        expected: /embedding 0 contains a non-finite value at dimension 0/
-      },
-      {
-        name: 'Infinity value',
-        vector: [Number.POSITIVE_INFINITY, ...new Array(383).fill(1)],
-        expected: /embedding 0 contains a non-finite value at dimension 0/
-      }
-    ])('rejects local model output with $name', async ({ vector, expected }) => {
-      huggingFaceTransformersMock.queuedVectors = [vector];
-
-      await expect(generateEmbedding('bad vector', {
-        provider: 'local'
-      })).rejects.toThrow(expected);
-    });
-
-    it('preserves sequential local batch order', async () => {
-      const first = new Array(LOCAL_TEST_DIMENSIONS).fill(1);
-      const second = new Array(LOCAL_TEST_DIMENSIONS).fill(2);
-      huggingFaceTransformersMock.queuedVectors = [first, second];
-
-      await expect(generateEmbeddings(['first', 'second'], {
-        provider: 'local'
-      })).resolves.toEqual([first, second]);
-      expect(huggingFaceTransformersMock.calls.map(call => call.text)).toEqual(['first', 'second']);
-    });
-
-    it('loads the local pipeline once for concurrent first calls', async () => {
-      let resolvePipeline: (model: typeof huggingFaceTransformersMock.model) => void = () => {};
-      huggingFaceTransformersMock.pipeline.mockImplementationOnce(async () =>
-        new Promise<typeof huggingFaceTransformersMock.model>(resolve => {
-          resolvePipeline = resolve;
-        })
-      );
-
-      const first = generateEmbedding('first', { provider: 'local' });
-      const second = generateEmbedding('second', { provider: 'local' });
-      await vi.waitFor(() => {
-        expect(huggingFaceTransformersMock.pipeline).toHaveBeenCalledTimes(1);
-      });
-
-      resolvePipeline(huggingFaceTransformersMock.model);
-      await expect(Promise.all([first, second])).resolves.toHaveLength(2);
-      expect(huggingFaceTransformersMock.pipeline).toHaveBeenCalledTimes(1);
-    });
-
-    it('evicts failed local pipeline loads so a later call can retry', async () => {
-      huggingFaceTransformersMock.pipeline
-        .mockRejectedValueOnce(new Error('download failed'))
-        .mockResolvedValueOnce(huggingFaceTransformersMock.model);
-
-      await expect(generateEmbedding('first', {
-        provider: 'local'
-      })).rejects.toThrow('download failed');
-
-      await expect(generateEmbedding('second', {
-        provider: 'local'
-      })).resolves.toHaveLength(LOCAL_TEST_DIMENSIONS);
-      expect(huggingFaceTransformersMock.pipeline).toHaveBeenCalledTimes(2);
-    });
-
-    it('aborts local inference before loading when the parent signal is already aborted', async () => {
-      const controller = new AbortController();
-      controller.abort();
-
-      await expect(generateEmbedding('test', {
-        provider: 'local',
-        signal: controller.signal
-      })).rejects.toThrow('local embedding error: model inference was aborted');
-      expect(huggingFaceTransformersMock.pipeline).not.toHaveBeenCalled();
-    });
-
-    it('times out local model loading when the runtime does not settle', async () => {
-      vi.useFakeTimers();
-      huggingFaceTransformersMock.pipeline.mockImplementationOnce(async () => new Promise(() => {}));
-
-      const promise = generateEmbedding('test', {
-        provider: 'local',
-        timeoutMs: 10
-      });
-      const assertion = expect(promise).rejects.toThrow('local embedding error: model inference timed out after 10ms');
-      await vi.advanceTimersByTimeAsync(10);
-
-      await assertion;
-      vi.useRealTimers();
-
-      await expect(generateEmbedding('retry after timeout', {
-        provider: 'local'
-      })).resolves.toHaveLength(LOCAL_TEST_DIMENSIONS);
-      expect(huggingFaceTransformersMock.pipeline).toHaveBeenCalledTimes(2);
     });
 
     it.each([128, 768, 1536, 3072])('accepts Gemini dimensions %i without credentials', (dimensions) => {

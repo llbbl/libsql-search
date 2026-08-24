@@ -4,9 +4,10 @@ import { mkdir, writeFile, rm, symlink } from 'fs/promises';
 import { join } from 'path';
 import { createTable, indexContent, IndexingError } from '../src/indexer.js';
 import {
-  huggingFaceTransformersMock,
-  resetHuggingFaceTransformersMock
-} from './huggingface-transformers.mock.js';
+  embeddingServiceMock,
+  resetEmbeddingServiceMock,
+  TEST_EMBEDDING_OPTIONS
+} from './embedding-service.mock.js';
 
 type BatchStatement = string | { sql: string; args?: unknown };
 
@@ -79,13 +80,13 @@ describe('indexer', () => {
   const testDir = join(process.cwd(), 'test-content');
 
   beforeEach(async () => {
+    resetEmbeddingServiceMock();
     client = createClient({ url: testDbUrl });
     await mkdir(testDir, { recursive: true });
   });
 
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
-    resetHuggingFaceTransformersMock();
     vi.unstubAllGlobals();
   });
 
@@ -143,7 +144,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(result.success).toBe(1);
@@ -168,7 +169,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(result.success).toBe(1);
@@ -186,7 +187,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       const articles = await client.execute('SELECT * FROM articles');
@@ -202,7 +203,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       const articles = await client.execute('SELECT * FROM articles');
@@ -216,7 +217,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(result.success).toBe(1);
@@ -231,7 +232,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       await rm(join(testDir, 'first.md'));
@@ -240,7 +241,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       const articles = await client.execute('SELECT * FROM articles');
@@ -258,7 +259,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         allowEmptyIndex: true
       });
 
@@ -273,7 +274,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         onProgress: (current, total, file) => {
           progressCalls.push({ current, total, file });
         }
@@ -291,7 +292,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -312,7 +313,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       await rm(join(testDir, 'first.md'));
@@ -329,7 +330,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -342,7 +343,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         allowEmptyIndex: true
       });
 
@@ -361,12 +362,12 @@ describe('indexer', () => {
       await seedIndex();
       await writeFile(join(testDir, 'second.md'), '---\ntitle: Second\n---\nContent');
 
-      huggingFaceTransformersMock.model.mockRejectedValueOnce(new Error('provider unavailable'));
+      embeddingServiceMock.fetch.mockRejectedValueOnce(new Error('provider unavailable'));
 
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -387,7 +388,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -407,7 +408,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -424,12 +425,12 @@ describe('indexer', () => {
       await writeFile(join(testDir, 'alpha.md'), '---\ntitle: Alpha\n---\nContent');
       await writeFile(join(testDir, 'beta.md'), '---\ntitle: Beta\n---\nContent');
 
-      huggingFaceTransformersMock.model.mockRejectedValueOnce(new Error('provider unavailable'));
+      embeddingServiceMock.fetch.mockRejectedValueOnce(new Error('provider unavailable'));
 
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         failurePolicy: 'skip'
       });
 
@@ -453,13 +454,13 @@ describe('indexer', () => {
       await writeFile(join(testDir, 'alpha.md'), '---\ntitle: Alpha\n---\nContent');
       await writeFile(join(testDir, 'beta.md'), '---\ntitle: Beta\n---\nContent');
 
-      huggingFaceTransformersMock.model.mockRejectedValueOnce(new Error('provider unavailable'));
-      huggingFaceTransformersMock.model.mockRejectedValueOnce(new Error('provider unavailable'));
+      embeddingServiceMock.fetch.mockRejectedValueOnce(new Error('provider unavailable'));
+      embeddingServiceMock.fetch.mockRejectedValueOnce(new Error('provider unavailable'));
 
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         failurePolicy: 'skip'
       }));
 
@@ -481,7 +482,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client: failingClient,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -502,7 +503,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client: rejectingClient,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -521,12 +522,12 @@ describe('indexer', () => {
       await seedIndex();
       await writeFile(join(testDir, 'alpha.md'), '---\ntitle: Alpha\n---\nContent');
 
-      huggingFaceTransformersMock.model.mockRejectedValueOnce('provider down');
+      embeddingServiceMock.fetch.mockRejectedValueOnce('provider down');
 
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -544,7 +545,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client,
         contentPath: join(testDir, 'does-not-exist'),
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -561,13 +562,13 @@ describe('indexer', () => {
       await writeFile(join(testDir, 'alpha.md'), '---\ntitle: Alpha\n---\nContent');
       await writeFile(join(testDir, 'beta.md'), '---\ntitle: Beta\n---\nContent');
 
-      huggingFaceTransformersMock.model.mockRejectedValueOnce(new Error('provider unavailable'));
-      huggingFaceTransformersMock.model.mockRejectedValueOnce(new Error('provider unavailable'));
+      embeddingServiceMock.fetch.mockRejectedValueOnce(new Error('provider unavailable'));
+      embeddingServiceMock.fetch.mockRejectedValueOnce(new Error('provider unavailable'));
 
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         failurePolicy: 'skip',
         allowEmptyIndex: true
       }));
@@ -590,7 +591,7 @@ describe('indexer', () => {
       await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       await rm(join(testDir, 'first.md'));
@@ -607,7 +608,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -628,7 +629,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         failurePolicy: 'skip'
       });
 
@@ -727,7 +728,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(result.success).toBe(1);
@@ -742,7 +743,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -765,7 +766,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         failurePolicy: 'skip'
       });
 
@@ -784,7 +785,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(result.success).toBe(1);
@@ -798,7 +799,7 @@ describe('indexer', () => {
       const error = await captureError(() => indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       }));
 
       expect(error).toBeInstanceOf(IndexingError);
@@ -822,7 +823,7 @@ describe('indexer', () => {
       const result = await indexContent({
         client,
         contentPath: testDir,
-        embeddingOptions: { provider: 'local', dimensions: 384 },
+        embeddingOptions: TEST_EMBEDDING_OPTIONS,
         failurePolicy: 'skip'
       });
 

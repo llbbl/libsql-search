@@ -55,13 +55,6 @@ These presets keep credentials out of the source file while making dimensions an
 
 ```ts
 const providerPresets = {
-  local: {
-    tableName: "articles_local_384",
-    dimensions: 384,
-    embeddingOptions: {
-      provider: "local" as const,
-    },
-  },
   cloudflare: {
     tableName: "articles_cf_bgem3_1024",
     dimensions: 1024,
@@ -137,9 +130,13 @@ export const POST: APIRoute = async ({ request }) => {
     client,
     query,
     limit,
-    tableName: "articles_local_384",
+    tableName: "articles_tei_1024",
     embeddingOptions: {
-      provider: "local",
+      provider: "openai-compatible",
+      baseUrl: process.env.EMBEDDING_BASE_URL!,
+      model: process.env.EMBEDDING_MODEL!,
+      dimensions: 1024,
+      apiKey: process.env.EMBEDDING_API_KEY,
       intent: "query",
     },
   });
@@ -162,14 +159,14 @@ const client = createClient({
 });
 
 export async function getStaticPaths() {
-  const articles = await getAllArticles(client, "articles_local_384");
+  const articles = await getAllArticles(client, "articles_tei_1024");
 
   return articles.map((article) => ({
     params: { slug: article.slug },
   }));
 }
 
-const article = await getArticleBySlug(client, "guides/getting-started", "articles_local_384");
+const article = await getArticleBySlug(client, "guides/getting-started", "articles_tei_1024");
 ```
 
 ## Next.js Route Handler
@@ -191,9 +188,13 @@ export async function POST(request: NextRequest) {
     client,
     query,
     limit,
-    tableName: "articles_local_384",
+    tableName: "articles_tei_1024",
     embeddingOptions: {
-      provider: "local",
+      provider: "openai-compatible",
+      baseUrl: process.env.EMBEDDING_BASE_URL!,
+      model: process.env.EMBEDDING_MODEL!,
+      dimensions: 1024,
+      apiKey: process.env.EMBEDDING_API_KEY,
       intent: "query",
     },
   });
@@ -214,7 +215,7 @@ const client = createClient({
 });
 
 export async function generateStaticParams() {
-  const articles = await getAllArticles(client, "articles_local_384");
+  const articles = await getAllArticles(client, "articles_tei_1024");
 
   return articles.map((article) => ({
     slug: article.slug,
@@ -223,7 +224,7 @@ export async function generateStaticParams() {
 
 export default async function Page({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const article = await getArticleBySlug(client, slug, "articles_local_384");
+  const article = await getArticleBySlug(client, slug, "articles_tei_1024");
 
   return <article>{article?.title}</article>;
 }
@@ -241,13 +242,6 @@ const client = createClient({
 });
 
 const providerPresets = {
-  local: {
-    tableName: "articles_local_384",
-    dimensions: 384,
-    embeddingOptions: {
-      provider: "local" as const,
-    },
-  },
   cloudflare: {
     tableName: "articles_cf_bgem3_1024",
     dimensions: 1024,
@@ -299,7 +293,7 @@ const providerPresets = {
   },
 } as const;
 
-const provider = process.env.EMBEDDING_PROVIDER ?? "local";
+const provider = process.env.EMBEDDING_PROVIDER ?? "openai-compatible";
 
 if (!(provider in providerPresets)) {
   throw new Error(
@@ -349,4 +343,4 @@ await generateEmbeddings(["doc one", "doc two"], {
 });
 ```
 
-The repository test suite should not require real provider credentials. See [Testing guidance](./TESTING.md) for local model mocks, Gemini SDK mocks, and validation-before-network assertions.
+The repository test suite should not require real provider credentials. See [Testing guidance](./TESTING.md) for embedding-service mocks, Gemini SDK mocks, and validation-before-network assertions.

@@ -2,9 +2,8 @@
 
 Use this page to choose an embedding provider, confirm the table width it needs, and understand what crosses a network boundary.
 
-`libsql-search` supports these provider values:
+`libsql-search` only talks to external embedding services; it never loads or hosts an embedding model in-process. It supports these provider values:
 
-- `local`
 - `cloudflare`
 - `mistral`
 - `gemini`
@@ -17,8 +16,7 @@ All providers share the same `EmbeddingOptions` surface:
 
 ```ts
 interface EmbeddingOptions {
-  provider?:
-    | "local"
+  provider:
     | "cloudflare"
     | "mistral"
     | "gemini"
@@ -40,7 +38,7 @@ interface EmbeddingOptions {
 
 Shared defaults and rules:
 
-- `provider` defaults to `local`
+- `provider` is required; there is no implicit embedding runtime or service
 - `maxLength` defaults to `8000` code units
 - `timeoutMs` defaults to `30000`
 - `indexContent()` defaults to `intent: "document"`
@@ -59,7 +57,6 @@ The `model` option is only used by `openai-compatible`.
 
 | Provider | Literal | Upstream model used by this adapter | Dimensions | Credentials | Batching | Network and privacy boundary | Cost and table planning |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Local | `local` | `Xenova/all-MiniLM-L6-v2` | Fixed `384` | None | Sequential in-process | No hosted API call. First use may download model artifacts and cache them locally. | No hosted API bill. Table must be `F32_BLOB(384)`. |
 | Cloudflare Workers AI | `cloudflare` | `@cf/baai/bge-m3` | Fixed `1024` | `accountId` and `apiToken`, or `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` | Native batch in one request | Indexed and queried text is sent to Cloudflare. | Check Cloudflare pricing before large rebuilds. Table must be `F32_BLOB(1024)`. |
 | Mistral | `mistral` | `mistral-embed` | Fixed `1024` | `apiKey`, or `MISTRAL_API_KEY` | Native batch in one request | Indexed and queried text is sent to Mistral. | Check Mistral pricing before rebuilds. Table must be `F32_BLOB(1024)`. |
 | Gemini | `gemini` | `gemini-embedding-2` | Default `3072`; allowed integers `128-3072` | `apiKey`, or `GEMINI_API_KEY` | Sequential SDK request per input | Indexed and queried text is sent to Google. The adapter currently rewrites payload text by intent. | Check Gemini pricing before rebuilds. Table width must match the chosen dimension count exactly. |
@@ -67,23 +64,6 @@ The `model` option is only used by `openai-compatible`.
 | OpenAI-compatible | `openai-compatible` | Your configured `model` | Required positive integer; no default | `baseUrl`, `model`, and `dimensions` are required. `apiKey` is optional and never falls back to env. | Metadata reports `native`; outbound requests are chunked sequentially at `batchSize`, default `32` | Boundary depends on the operator behind `baseUrl`. Treat `baseUrl` as a trusted server-side setting and review HTTPS, SSRF, logging, and retention controls yourself. | Table width must match the configured `dimensions`. Any endpoint or model change should use a new table plus full reindex. |
 
 ## Provider Notes
-
-### Local
-
-```ts
-embeddingOptions: {
-  provider: "local",
-}
-```
-
-- fixed at `384` dimensions
-- rejects any other `dimensions` value before loading the runtime
-- uses `@huggingface/transformers` lazily and caches the local pipeline by model name
-
-References:
-
-- [Transformers.js in Node.js](https://huggingface.co/docs/transformers.js/en/tutorials/node)
-- [Transformers.js environment and cache controls](https://huggingface.co/docs/transformers.js/en/api/env)
 
 ### Cloudflare Workers AI
 

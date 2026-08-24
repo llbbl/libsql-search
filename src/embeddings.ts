@@ -1,11 +1,10 @@
 /**
  * Multi-provider embedding generation
- * Supports local Hugging Face Transformers, Gemini, OpenAI, Mistral,
- * Cloudflare Workers AI, and custom OpenAI-compatible endpoints
+ * Supports Gemini, OpenAI, Mistral, Cloudflare Workers AI, and custom
+ * OpenAI-compatible endpoints.
  */
 
 export type EmbeddingProvider =
-  | 'local'
   | 'gemini'
   | 'openai'
   | 'mistral'
@@ -45,7 +44,7 @@ export interface EmbeddingBatchResult {
 }
 
 export interface EmbeddingOptions {
-  provider?: EmbeddingProvider;
+  provider: EmbeddingProvider;
   apiKey?: string;
   accountId?: string;
   apiToken?: string;
@@ -57,28 +56,6 @@ export interface EmbeddingOptions {
   intent?: EmbeddingIntent;
   timeoutMs?: number;
   signal?: AbortSignal;
-}
-
-interface LocalEmbeddingOutput {
-  data: ArrayLike<number>;
-}
-
-type LocalFeatureExtractionPipeline = (
-  text: string,
-  options: { pooling: 'mean'; normalize: true }
-) => LocalEmbeddingOutput | Promise<LocalEmbeddingOutput>;
-
-interface HuggingFaceTransformersModule {
-  pipeline: (
-    task: 'feature-extraction',
-    model: string
-  ) => Promise<LocalFeatureExtractionPipeline>;
-}
-
-interface LocalModelCacheEntry {
-  promise: Promise<LocalFeatureExtractionPipeline>;
-  settled: boolean;
-  waiters: number;
 }
 
 interface RuntimeEnvironment {
@@ -110,10 +87,8 @@ export type EmbeddingBatchItem = number[] | EmbeddingBatchItemResult;
 
 const OPENAI_DEFAULT_DIMENSIONS = 768;
 const OPENAI_COMPATIBLE_DEFAULT_BATCH_SIZE = 32;
-const LOCAL_DIMENSIONS = 384;
 const DEFAULT_MAX_LENGTH = 8000;
 const DEFAULT_TIMEOUT_MS = 30_000;
-const LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';
 const GEMINI_MODEL = 'gemini-embedding-2';
 const GEMINI_DIMENSIONS = 3072;
 const GEMINI_MIN_DIMENSIONS = 128;
@@ -127,8 +102,6 @@ const MISTRAL_DIMENSIONS = 1024;
 const CLOUDFLARE_MODEL = '@cf/baai/bge-m3';
 const CLOUDFLARE_DIMENSIONS = 1024;
 
-const localModelCacheByModel = new Map<string, LocalModelCacheEntry>();
-
 function getEnvironmentVariable(name: string): string | undefined {
   const runtime = globalThis as typeof globalThis & RuntimeEnvironment;
   const nodeValue = runtime.process?.env?.[name];
@@ -140,84 +113,6 @@ function getEnvironmentVariable(name: string): string | undefined {
     return runtime.Deno?.env?.get?.(name);
   } catch {
     return undefined;
-  }
-}
-
-function deletePendingLocalModelCache(modelName: string, entry: LocalModelCacheEntry): void {
-  if (!entry.settled && entry.waiters === 0 && localModelCacheByModel.get(modelName) === entry) {
-    localModelCacheByModel.delete(modelName);
-  }
-}
-
-async function getLocalEmbeddingModel(
-  modelName: string,
-  signal: AbortSignal
-): Promise<LocalFeatureExtractionPipeline> {
-  const cached = localModelCacheByModel.get(modelName);
-  if (cached) {
-    cached.waiters++;
-    try {
-      return await waitForLocalEmbeddingModel(modelName, cached, signal);
-    } finally {
-      cached.waiters--;
-      deletePendingLocalModelCache(modelName, cached);
-    }
-  }
-
-  const modelPromise = (async () => {
-    console.log(`Loading local embedding model (${modelName})...`);
-    const { pipeline } = await import('@huggingface/transformers') as HuggingFaceTransformersModule;
-    const model = await pipeline('feature-extraction', modelName);
-    console.log('Local model loaded successfully');
-    return model;
-  })();
-
-  const entry: LocalModelCacheEntry = {
-    promise: modelPromise,
-    settled: false,
-    waiters: 1
-  };
-  localModelCacheByModel.set(modelName, entry);
-
-  modelPromise
-    .then(() => {
-      entry.settled = true;
-    })
-    .catch(() => {
-      localModelCacheByModel.delete(modelName);
-    });
-
-  try {
-    return await waitForLocalEmbeddingModel(modelName, entry, signal);
-  } finally {
-    entry.waiters--;
-    deletePendingLocalModelCache(modelName, entry);
-  }
-}
-
-async function waitForLocalEmbeddingModel(
-  modelName: string,
-  entry: LocalModelCacheEntry,
-  signal: AbortSignal
-): Promise<LocalFeatureExtractionPipeline> {
-  if (signal.aborted) {
-    deletePendingLocalModelCache(modelName, entry);
-    throw providerError('local', 'model inference was aborted');
-  }
-
-  let rejectAbort: (error: Error) => void = () => {};
-  const abortPromise = new Promise<never>((_resolve, reject) => {
-    rejectAbort = reject;
-  });
-  const onAbort = (): void => {
-    rejectAbort(providerError('local', 'model inference was aborted'));
-  };
-
-  signal.addEventListener('abort', onAbort, { once: true });
-  try {
-    return await Promise.race([entry.promise, abortPromise]);
-  } finally {
-    signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -234,15 +129,17 @@ function getTimeoutMs(value: number | undefined): number {
 }
 
 function resolveProviderName(provider: EmbeddingProvider | undefined): EmbeddingProvider {
-  switch (provider ?? 'local') {
-    case 'local':
+  switch (provider) {
     case 'gemini':
     case 'openai':
     case 'mistral':
     case 'cloudflare':
     case 'openai-compatible':
-      return provider ?? 'local';
+      return provider;
     default:
+      if (provider === undefined) {
+        throw new Error('Embedding provider is required');
+      }
       throw new Error(`Unknown embedding provider: ${String(provider)}`);
   }
 }
@@ -553,13 +450,6 @@ function createProviderMetadata(
   model?: string
 ): EmbeddingProviderMetadata {
   switch (provider) {
-    case 'local':
-      return Object.freeze({
-        name: 'local' as const,
-        model: LOCAL_MODEL,
-        dimensions,
-        batch: Object.freeze({ mode: 'sequential' as const })
-      });
     case 'gemini':
       return Object.freeze({
         name: 'gemini' as const,
@@ -602,17 +492,6 @@ function getEffectiveDimensions(
   provider: EmbeddingProvider,
   dimensions: number | undefined
 ): number {
-  if (provider === 'local') {
-    if (dimensions !== undefined && dimensions !== LOCAL_DIMENSIONS) {
-      throw providerError(
-        'local',
-        `${LOCAL_MODEL} returns ${LOCAL_DIMENSIONS} dimensions; received dimensions ${String(dimensions)}`
-      );
-    }
-
-    return LOCAL_DIMENSIONS;
-  }
-
   if (provider === 'gemini') {
     const effectiveDimensions = dimensions ?? GEMINI_DIMENSIONS;
     if (
@@ -692,47 +571,6 @@ function createEmbeddingBatchResult(
     dimensions: metadata.dimensions,
     intent
   });
-}
-
-class LocalEmbeddingProvider implements EmbeddingProviderClient {
-  readonly metadata: EmbeddingProviderMetadata;
-  readonly #timeoutMs: number;
-
-  constructor(metadata: EmbeddingProviderMetadata, timeoutMs: number) {
-    this.metadata = metadata;
-    this.#timeoutMs = timeoutMs;
-  }
-
-  async embed(texts: string[], options: EmbeddingRequestOptions = {}): Promise<EmbeddingBatchResult> {
-    const intent = resolveIntent(options.intent);
-    if (texts.length === 0) {
-      return createEmbeddingBatchResult(this.metadata, intent, []);
-    }
-
-    assertBatchSize(this.metadata, texts.length);
-    const vectors = await withTimeout(
-      'local',
-      'model inference',
-      this.#timeoutMs,
-      async (signal) => {
-        const model = await getLocalEmbeddingModel(this.metadata.model, signal);
-        return embedSequentially('local', 'model inference', texts, signal, async (text) => {
-          const output = await model(text, {
-            pooling: 'mean',
-            normalize: true
-          });
-          return Array.from(output.data);
-        });
-      },
-      options.signal
-    );
-
-    return createEmbeddingBatchResult(
-      this.metadata,
-      intent,
-      validateEmbeddingBatch(vectors, texts.length, this.metadata.dimensions, 'local')
-    );
-  }
 }
 
 class GeminiEmbeddingProvider implements EmbeddingProviderClient {
@@ -954,14 +792,12 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProviderClient {
   }
 }
 
-export function createEmbeddingProvider(options: EmbeddingOptions = {}): EmbeddingProviderClient {
+export function createEmbeddingProvider(options: EmbeddingOptions): EmbeddingProviderClient {
   const provider = resolveProviderName(options.provider);
   const metadata = getEmbeddingProviderMetadata(options);
   const timeoutMs = getTimeoutMs(options.timeoutMs);
 
   switch (provider) {
-    case 'local':
-      return new LocalEmbeddingProvider(metadata, timeoutMs);
     case 'gemini': {
       const key = getOptionalTrimmedCredential(
         options.apiKey ?? getEnvironmentVariable('GEMINI_API_KEY')
@@ -1068,7 +904,7 @@ export function createEmbeddingProvider(options: EmbeddingOptions = {}): Embeddi
   }
 }
 
-export function getEmbeddingProviderMetadata(options: EmbeddingOptions = {}): EmbeddingProviderMetadata {
+export function getEmbeddingProviderMetadata(options: EmbeddingOptions): EmbeddingProviderMetadata {
   const provider = resolveProviderName(options.provider);
   if (provider === 'openai-compatible') {
     normalizeOpenAICompatibleEmbeddingsUrl(getRequiredTrimmedString(options.baseUrl, 'baseUrl'));
@@ -1085,7 +921,7 @@ export function getEmbeddingProviderMetadata(options: EmbeddingOptions = {}): Em
  */
 export async function generateEmbeddings(
   texts: string[],
-  options: EmbeddingOptions = {}
+  options: EmbeddingOptions
 ): Promise<number[][]> {
   const maxLength = getPositiveInteger(options.maxLength ?? DEFAULT_MAX_LENGTH, 'maxLength');
   const intent = resolveIntent(options.intent);
@@ -1107,7 +943,7 @@ export async function generateEmbeddings(
  */
 export async function generateEmbedding(
   text: string,
-  options: EmbeddingOptions = {}
+  options: EmbeddingOptions
 ): Promise<number[]> {
   const [embedding] = await generateEmbeddings([text], options);
   if (!embedding) {

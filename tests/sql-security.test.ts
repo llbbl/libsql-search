@@ -68,7 +68,8 @@ describe('SQL input security', () => {
         client,
         query: 'guide',
         tableName,
-        limit: 1
+        limit: 1,
+        embeddingOptions: { provider: 'openai', apiKey: 'key' }
       })).resolves.toHaveLength(1);
     }
   );
@@ -117,6 +118,23 @@ describe('SQL input security', () => {
     expect(generateEmbedding).not.toHaveBeenCalled();
   });
 
+  it('requires explicit embedding options for indexing and search', async () => {
+    const client = createMockClient();
+
+    await expect(indexContent({
+      client,
+      contentPath: '/path/that/should/not/be/read'
+    } as never)).rejects.toThrow('embeddingOptions is required');
+
+    await expect(search({
+      client,
+      query: 'guide'
+    } as never)).rejects.toThrow('embeddingOptions is required');
+
+    expect(client.execute).not.toHaveBeenCalled();
+    expect(generateEmbedding).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['getAllArticles', (client: Client) => getAllArticles(client, 'bad-name')],
     ['getArticleBySlug', (client: Client) => getArticleBySlug(client, 'slug', 'bad-name')],
@@ -157,10 +175,15 @@ describe('SQL input security', () => {
       await search({
         client,
         query: 'guide',
+        embeddingOptions: { provider: 'openai', apiKey: 'key' },
         ...(limit === undefined ? {} : { limit })
       });
 
-      expect(generateEmbedding).toHaveBeenCalledWith('guide', { intent: 'query' });
+      expect(generateEmbedding).toHaveBeenCalledWith('guide', {
+        provider: 'openai',
+        apiKey: 'key',
+        intent: 'query'
+      });
       expect(client.execute).toHaveBeenCalledWith(expect.objectContaining({
         args: {
           queryVector: JSON.stringify([0.1, 0.2, 0.3]),

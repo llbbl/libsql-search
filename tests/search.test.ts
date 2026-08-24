@@ -11,16 +11,17 @@ import {
 } from '../src/search.js';
 import { generateEmbedding } from '../src/embeddings.js';
 import {
-  huggingFaceTransformersMock,
-  resetHuggingFaceTransformersMock
-} from './huggingface-transformers.mock.js';
+  embeddingServiceMock,
+  resetEmbeddingServiceMock,
+  TEST_EMBEDDING_OPTIONS
+} from './embedding-service.mock.js';
 
 describe('search', () => {
   const testDbUrl = ':memory:';
   let client: ReturnType<typeof createClient>;
 
   beforeEach(async () => {
-    resetHuggingFaceTransformersMock();
+    resetEmbeddingServiceMock();
     client = createClient({ url: testDbUrl });
     await createTable(client);
   });
@@ -40,7 +41,7 @@ describe('search', () => {
    * derived from its text, so distances can be made to tie deliberately.
    */
   async function insertArticleWithVector(slug: string, vector: number[]): Promise<void> {
-    huggingFaceTransformersMock.queuedVectors.push(vector);
+    embeddingServiceMock.queuedVectors.push(vector);
 
     await insertTestArticle({
       slug,
@@ -56,10 +57,7 @@ describe('search', () => {
     folder?: string;
     tags?: string[];
   }) {
-    const embedding = await generateEmbedding(data.content, {
-      provider: 'local',
-      dimensions: 384
-    });
+    const embedding = await generateEmbedding(data.content, TEST_EMBEDDING_OPTIONS);
 
     await client.execute({
       sql: `INSERT INTO articles
@@ -94,7 +92,7 @@ describe('search', () => {
         client,
         query: 'static site building',
         limit: 5,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results).toHaveLength(2);
@@ -126,7 +124,7 @@ describe('search', () => {
         client,
         query: 'JavaScript',
         limit: 2,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results).toHaveLength(2);
@@ -149,7 +147,7 @@ describe('search', () => {
         client,
         query: 'TypeScript programming',
         limit: 5,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results[0].slug).toBe('exact-match');
@@ -167,7 +165,7 @@ describe('search', () => {
       const results = await search({
         client,
         query: 'article',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results[0].tags).toEqual(['tag1', 'tag2']);
@@ -177,7 +175,7 @@ describe('search', () => {
       const results = await search({
         client,
         query: 'anything',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results).toEqual([]);
@@ -201,7 +199,7 @@ describe('search', () => {
         client,
         query: 'article',
         limit: 10,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results.map(result => result.slug)).toEqual(['embedded']);
@@ -228,7 +226,7 @@ describe('search', () => {
         content: 'TypeScript is a typed superset of JavaScript'
       });
 
-      const embeddingOptions = { provider: 'local' as const, dimensions: 384 };
+      const embeddingOptions = TEST_EMBEDDING_OPTIONS;
 
       const indexed = await search({
         client,
@@ -264,13 +262,13 @@ describe('search', () => {
       // through. With the tiebreaker present the result is fully deterministic,
       // so a higher count adds no flake risk of its own.
       for (let run = 0; run < 25; run++) {
-        huggingFaceTransformersMock.queuedVectors.push(unitVector(12));
+        embeddingServiceMock.queuedVectors.push(unitVector(12));
 
         const results = await search({
           client,
           query: 'tie breaker',
           limit: 3,
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         });
 
         runs.push(results.map(result => result.slug).join(','));
@@ -294,7 +292,7 @@ describe('search', () => {
         query: 'JavaScript',
         limit: 5,
         candidates: 50,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(executeSpy).toHaveBeenCalledWith(expect.objectContaining({
@@ -319,7 +317,7 @@ describe('search', () => {
         client,
         query: 'JavaScript',
         limit,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(executeSpy).toHaveBeenCalledWith(expect.objectContaining({
@@ -346,11 +344,11 @@ describe('search', () => {
           query: 'JavaScript',
           limit: 5,
           candidates: candidates as number,
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         })).rejects.toThrow('Invalid search candidates');
 
         expect(executeSpy).not.toHaveBeenCalled();
-        expect(huggingFaceTransformersMock.model).not.toHaveBeenCalled();
+        expect(embeddingServiceMock.fetch).not.toHaveBeenCalled();
       }
     );
 
@@ -369,10 +367,7 @@ describe('search', () => {
         )
       `);
 
-      const embedding = await generateEmbedding('JavaScript programming', {
-        provider: 'local',
-        dimensions: 384
-      });
+      const embedding = await generateEmbedding('JavaScript programming', TEST_EMBEDDING_OPTIONS);
 
       await client.execute({
         sql: `INSERT INTO unindexed
@@ -388,7 +383,7 @@ describe('search', () => {
           client,
           query: 'JavaScript',
           tableName: 'unindexed',
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         });
       } catch (error) {
         thrown = error;
@@ -432,10 +427,7 @@ describe('search', () => {
         ['exact-match', 'TypeScript is a typed superset of JavaScript'],
         ['partial-match', 'Python is a programming language']
       ]) {
-        const embedding = await generateEmbedding(content, {
-          provider: 'local',
-          dimensions: 384
-        });
+        const embedding = await generateEmbedding(content, TEST_EMBEDDING_OPTIONS);
 
         await client.execute({
           sql: `INSERT INTO legacy
@@ -453,7 +445,7 @@ describe('search', () => {
         query: 'TypeScript programming',
         tableName: 'legacy',
         limit: 5,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       // The full ordered list, not just "not empty": both pre-existing rows
@@ -479,7 +471,7 @@ describe('search', () => {
       await expect(search({
         client,
         query: 'JavaScript',
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       })).rejects.toBe(failure);
     }, 30000);
 
@@ -495,7 +487,7 @@ describe('search', () => {
         await search({
           client,
           query: 'JavaScript',
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         });
       } catch (error) {
         thrown = error;
@@ -511,7 +503,7 @@ describe('search', () => {
     }, 30000);
 
     it('should surface a real dimension mismatch instead of the missing-index message', async () => {
-      // Dimension drift: the table was created 4 wide, but the local provider
+      // Dimension drift: the table was created 4 wide, but the test provider
       // queries with its native 384-wide vector. The vector index exists here,
       // so the missing-index advice would be actively wrong.
       await createTable(client, 'narrow', 4);
@@ -530,7 +522,7 @@ describe('search', () => {
           client,
           query: 'mismatched width',
           tableName: 'narrow',
-          embeddingOptions: { provider: 'local', dimensions: 384 }
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
         });
       } catch (error) {
         thrown = error;
@@ -570,10 +562,7 @@ describe('search', () => {
         ['exact-match', 'TypeScript is a typed superset of JavaScript'],
         ['partial-match', 'Python is a programming language']
       ]) {
-        const embedding = await generateEmbedding(content, {
-          provider: 'local',
-          dimensions: 384
-        });
+        const embedding = await generateEmbedding(content, TEST_EMBEDDING_OPTIONS);
 
         await client.execute({
           sql: `INSERT INTO unindexed
@@ -589,7 +578,7 @@ describe('search', () => {
         tableName: 'unindexed',
         limit: 5,
         exact: true,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       expect(results.map(result => result.slug)).toEqual(['exact-match', 'partial-match']);
@@ -610,7 +599,7 @@ describe('search', () => {
         query: 'JavaScript',
         exact: true,
         candidates: 64,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       });
 
       const statement = executeSpy.mock.calls[0][0] as { sql: string; args: unknown };
@@ -634,11 +623,11 @@ describe('search', () => {
         limit: 10,
         candidates: 5,
         exact: true,
-        embeddingOptions: { provider: 'local', dimensions: 384 }
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
       })).rejects.toThrow('Invalid search candidates');
 
       expect(executeSpy).not.toHaveBeenCalled();
-      expect(huggingFaceTransformersMock.model).not.toHaveBeenCalled();
+      expect(embeddingServiceMock.fetch).not.toHaveBeenCalled();
     }, 30000);
   });
 

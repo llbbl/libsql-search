@@ -1,11 +1,2 @@
 onlyBuiltDependencies:
   - esbuild
-  - onnxruntime-node
-  - sharp
-
-auditConfig:
-  # Upstream baseline from @huggingface/transformers 4.2.0 native runtime deps.
-  # Keep this narrow and remove entries when HF/onnxruntime/sharp ship patched versions.
-  ignoreGhsas:
-    - GHSA-xcpc-8h2w-3j85
-    - GHSA-f88m-g3jw-g9cj

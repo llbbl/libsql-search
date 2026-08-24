@@ -65,6 +65,11 @@ const results = await search({
   limit: 5,
   embeddingOptions,
 });
+
+// When this adapter's lifetime ends, drain and close its cached statements
+// before closing the caller-owned database handle.
+await client.dispose();
+await database.close();
 ```
 
 Use `":memory:"` instead of a file path for an ephemeral database.
@@ -73,6 +78,29 @@ Use `":memory:"` instead of a file path for an ephemeral database.
 `getArticlesByFolder`, and `getFolders` all accept the adapter. The option and
 result shapes — `SearchOptions`, `SearchResult`, `IndexerOptions`,
 `IndexResult` — are identical on both backends.
+
+### Adapter lifetime and disposal
+
+One adapter caches up to **32 query statements**, keyed by SQL and evicted in
+least-recently-used order. The bound matters because public `tableName` options
+are embedded in SQL: an unbounded cache would let a long-lived process retain a
+new native statement for every valid table name it sees. Statements that are
+currently running or queued are closed after they finish rather than being
+evicted out from under a call.
+
+Call `await client.dispose()` after all work using that adapter has settled.
+Disposal drains queued query calls and closes every cached statement, but does
+**not** close the database handle you supplied. It is terminal: later calls on
+that adapter reject. Close the database separately, after disposal. If you omit
+disposal, the reusable cache is still bounded at 32 entries and lives until the
+underlying handle or process exits; statements evicted while in flight live
+only until their queued calls finish.
+
+The adapter serializes concurrent calls that share one cached statement. This
+is required for correctness, not just memory use: the native statement mutates
+its current bindings, so overlapping `all()` calls with different arguments can
+otherwise return another caller's rows. Different cached SQL statements remain
+independent.
 
 ## What is different on Turso
 
@@ -192,13 +220,14 @@ point is still type-checked by `deno task check` so the claim above stays true.
 unchanged, and the main entry point exports no new symbol and references no
 Turso type.
 
-`tursoAdapter()` returns a `DatabaseAdapter`, and that type is exported from
-`libsql-search/turso` so you can name it:
+`tursoAdapter()` returns a `TursoAdapter`, which extends `DatabaseAdapter` with
+the disposal hook. Both types are exported from `libsql-search/turso` so you can
+name them:
 
 ```ts
-import { tursoAdapter, type DatabaseAdapter } from "libsql-search/turso";
+import { tursoAdapter, type TursoAdapter } from "libsql-search/turso";
 
-let client: DatabaseAdapter;
+let client: TursoAdapter;
 ```
 
 It is exported from the subpath only. The main entry point does not export it,
@@ -217,15 +246,18 @@ to prove the two stay interchangeable, and runs as part of
 Three things in `src/turso.ts` look like noise and are not. Each has a
 regression test; none of them fails loudly at runtime if removed.
 
-**Prepared statements must be closed.** A statement holds native memory that the
-garbage collector cannot reclaim, because it is not JavaScript heap. Every
-`prepare()` is released with `close()` in a `finally`. Measured through the
-built bundle, 60 000 `executeQuery()` calls on one handle grow RSS by ~570 MB
-without the close and ~150 MB with it. `search()` issues exactly one query, so
-an SSR site calling it per request is the case that turns this from untidy into
-an OOM. Inside `executeAtomicWrite()` the cached statements are released only
-*after* `COMMIT` or `ROLLBACK` — a statement stays bound to the transaction
-while it is open.
+**Prepared statements are bounded, serialized, and explicitly disposed.** A
+statement holds native memory that the garbage collector cannot reclaim,
+because it is not JavaScript heap. The query path therefore reuses a 32-entry
+LRU instead of preparing on every request, serializes rebinds per entry, and
+closes evictions only after their queued calls finish. `TursoAdapter.dispose()`
+drains and closes the remaining cache. Measured through the built bundle,
+60 000 `executeQuery()` calls grew RSS by ~570 MB when statements were never
+closed, ~150 MB when each call prepared and closed, and ~7 MB when one statement
+was reused. `search()` issues exactly one query, so the SSR-per-request path is
+where reuse matters most. Inside `executeAtomicWrite()` the transaction-local
+statements are still released only *after* `COMMIT` or `ROLLBACK` — a statement
+stays bound to the transaction while it is open.
 
 **`BEGIN IMMEDIATE` sits outside the `try`.** If it were inside, a `BEGIN` that
 fails because another rebuild already holds the write lock would fall into the

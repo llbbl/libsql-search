@@ -242,6 +242,7 @@ describe('database boundary', () => {
      */
     function createRecordingHandle(options: { omitClose?: boolean } = {}) {
       const events: string[] = [];
+      let prepares = 0;
       let closes = 0;
 
       const handle = {
@@ -249,6 +250,7 @@ describe('database boundary', () => {
           events.push(`exec:${sql}`);
         },
         prepare: (sql: string) => {
+          prepares += 1;
           events.push(`prepare:${sql}`);
 
           const statement: Record<string, unknown> = {
@@ -273,15 +275,30 @@ describe('database boundary', () => {
         }
       };
 
-      return { handle, events, closeCount: () => closes };
+      return {
+        handle,
+        events,
+        prepareCount: () => prepares,
+        closeCount: () => closes
+      };
     }
 
-    it('should close the prepared statement after a query', async () => {
-      const { handle, events } = createRecordingHandle();
+    it('should reuse a query statement until the adapter is disposed', async () => {
+      const { handle, events, prepareCount, closeCount } = createRecordingHandle();
+      const adapter = tursoAdapter(handle);
 
-      await tursoAdapter(handle).executeQuery('SELECT 1');
+      await adapter.executeQuery('SELECT 1');
+      await adapter.executeQuery('SELECT 1');
 
-      expect(events).toEqual(['prepare:SELECT 1', 'all', 'close']);
+      expect(prepareCount()).toBe(1);
+      expect(closeCount()).toBe(0);
+      expect(events).toEqual(['prepare:SELECT 1', 'all', 'all']);
+
+      await adapter.dispose();
+
+      expect(closeCount()).toBe(1);
+      expect(events.at(-1)).toBe('close');
+      await expect(adapter.executeQuery('SELECT 1')).rejects.toThrow('disposed');
     });
 
     it('should close the prepared statement even when the query throws', async () => {
@@ -314,8 +331,83 @@ describe('database boundary', () => {
       // Optional on the interface, so the repo's own fake handles and any
       // driver that manages statement lifetime itself keep working.
       const { handle } = createRecordingHandle({ omitClose: true });
+      const adapter = tursoAdapter(handle);
 
-      await expect(tursoAdapter(handle).executeQuery('SELECT 1')).resolves.toEqual([]);
+      await expect(adapter.executeQuery('SELECT 1')).resolves.toEqual([]);
+      await expect(adapter.dispose()).resolves.toBeUndefined();
+    });
+
+    it('should bound caller-controlled table SQL to 32 cached statements', async () => {
+      const { handle, prepareCount, closeCount } = createRecordingHandle();
+      const adapter = tursoAdapter(handle);
+
+      for (let i = 0; i < 64; i++) {
+        await getFolders(adapter, `articles_${String(i)}`);
+      }
+
+      expect(prepareCount()).toBe(64);
+      expect(closeCount()).toBe(32);
+
+      // The newest entry is still cached and reusable.
+      await getFolders(adapter, 'articles_63');
+      expect(prepareCount()).toBe(64);
+
+      await adapter.dispose();
+      expect(closeCount()).toBe(64);
+    });
+
+    it('should defer eviction and disposal until an in-flight query finishes', async () => {
+      let releaseSlow!: () => void;
+      const slowResult = new Promise<Array<Record<string, unknown>>>(resolve => {
+        releaseSlow = () => resolve([]);
+      });
+      let signalStarted!: () => void;
+      const started = new Promise<void>(resolve => {
+        signalStarted = resolve;
+      });
+      const closed: string[] = [];
+      const handle = {
+        exec: async () => {},
+        prepare: (sql: string) => ({
+          run: async () => {},
+          all: async () => {
+            if (sql === 'SELECT slow') {
+              signalStarted();
+              return slowResult;
+            }
+            return [];
+          },
+          close: () => {
+            closed.push(sql);
+          }
+        })
+      };
+      const adapter = tursoAdapter(handle);
+
+      const slowQuery = adapter.executeQuery('SELECT slow');
+      await started;
+
+      // The 33rd distinct SQL evicts the active oldest entry from the 32-slot
+      // LRU, but must not close it while all() is still using it.
+      for (let i = 0; i < 32; i++) {
+        await adapter.executeQuery(`SELECT ${String(i)}`);
+      }
+      expect(closed).not.toContain('SELECT slow');
+
+      let disposed = false;
+      const disposal = adapter.dispose().then(() => {
+        disposed = true;
+      });
+      await Promise.resolve();
+      expect(disposed).toBe(false);
+
+      releaseSlow();
+      await slowQuery;
+      await disposal;
+
+      expect(disposed).toBe(true);
+      expect(closed.filter(sql => sql === 'SELECT slow')).toHaveLength(1);
+      expect(closed).toHaveLength(33);
     });
 
     it('should close cached statements only after COMMIT', async () => {

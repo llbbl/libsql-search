@@ -14,11 +14,21 @@
  * import { tursoAdapter } from 'libsql-search/turso';
  * import { createTable, indexContent, search } from 'libsql-search';
  *
- * const client = tursoAdapter(await connect('./local.db'));
+ * const database = await connect('./local.db');
+ * const client = tursoAdapter(database);
+ * const embeddingOptions = {
+ *   provider: 'openai-compatible' as const,
+ *   baseUrl: 'https://embeddings.example.com/v1',
+ *   model: 'bge-large-en-v1.5',
+ *   dimensions: 1024
+ * };
  *
- * await createTable(client);
- * await indexContent({ client, contentPath: './content' });
- * const results = await search({ client, query: 'vector search' });
+ * await createTable(client, 'articles', 1024);
+ * await indexContent({ client, contentPath: './content', embeddingOptions });
+ * const results = await search({ client, query: 'vector search', embeddingOptions });
+ *
+ * await client.dispose();
+ * await database.close();
  * ```
  *
  * @module libsql-search/turso
@@ -55,8 +65,9 @@ export interface TursoStatement {
    *
    * Not closing leaks roughly 10 KB of native memory per prepare on
    * `@tursodatabase/database`, which the garbage collector does not reclaim
-   * because it is not JavaScript heap. A server calling `search()` per request
-   * grows without bound until the process is killed.
+   * because it is not JavaScript heap. The adapter therefore closes
+   * transaction-local statements immediately and query statements on safe LRU
+   * eviction or disposal.
    */
   close?(): unknown;
 }
@@ -72,6 +83,38 @@ export interface TursoStatement {
 export interface TursoDatabase {
   exec(sql: string): unknown;
   prepare(sql: string): TursoStatement;
+}
+
+/**
+ * A Turso-backed adapter with an explicit prepared-statement disposal hook.
+ *
+ * `dispose()` is terminal: it waits for queued query calls, closes every
+ * cached query statement, and rejects later adapter operations. It does not
+ * close the caller-owned {@link TursoDatabase} handle.
+ */
+export interface TursoAdapter extends DatabaseAdapter {
+  dispose(): Promise<void>;
+}
+
+/**
+ * Maximum number of idle/reusable query statements retained by one adapter.
+ *
+ * SQL includes caller-controlled table names, so an unbounded map would turn
+ * statement reuse into a slower native-memory leak. Thirty-two entries cover
+ * the library's fixed query shapes across several tables while keeping that
+ * lifetime cost small and deterministic.
+ */
+const MAX_QUERY_STATEMENT_CACHE_SIZE = 32;
+
+interface QueryStatementCacheEntry {
+  readonly sql: string;
+  readonly statement: TursoStatement;
+  /** Resolves when every call already queued on this statement has finished. */
+  tail: Promise<void>;
+  /** Includes the running call and calls waiting for their turn. */
+  pending: number;
+  retired: boolean;
+  closePromise?: Promise<void>;
 }
 
 /**
@@ -94,10 +137,93 @@ export interface TursoDatabase {
  *   This preserves the guarantee that a failed rebuild leaves the previous
  *   index intact.
  */
-export function tursoAdapter(database: TursoDatabase): DatabaseAdapter {
+export function tursoAdapter(database: TursoDatabase): TursoAdapter {
   assertTursoDatabase(database);
 
-  return {
+  const queryStatementsBySql = new Map<string, QueryStatementCacheEntry>();
+  const liveQueryStatements = new Set<QueryStatementCacheEntry>();
+  let disposed = false;
+  let disposePromise: Promise<void> | undefined;
+
+  const assertUsable = (): void => {
+    if (disposed) {
+      throw new Error('This Turso adapter has been disposed');
+    }
+  };
+
+  const closeQueryStatement = (
+    entry: QueryStatementCacheEntry
+  ): Promise<void> => {
+    entry.closePromise ??= closeStatement(entry.statement).finally(() => {
+      liveQueryStatements.delete(entry);
+    });
+
+    return entry.closePromise;
+  };
+
+  const retireQueryStatement = (entry: QueryStatementCacheEntry): void => {
+    if (queryStatementsBySql.get(entry.sql) === entry) {
+      queryStatementsBySql.delete(entry.sql);
+    }
+
+    entry.retired = true;
+    if (entry.pending === 0) {
+      // closeStatement() absorbs both synchronous throws and rejected close
+      // promises, so deliberately detaching this cannot create an unhandled
+      // rejection.
+      void closeQueryStatement(entry);
+    }
+  };
+
+  const acquireQueryStatement = (sql: string): {
+    entry: QueryStatementCacheEntry;
+    turn: Promise<void>;
+    release: () => void;
+  } => {
+    assertUsable();
+
+    let entry = queryStatementsBySql.get(sql);
+    if (entry === undefined) {
+      entry = {
+        sql,
+        statement: database.prepare(sql),
+        tail: Promise.resolve(),
+        pending: 0,
+        retired: false
+      };
+      queryStatementsBySql.set(sql, entry);
+      liveQueryStatements.add(entry);
+
+      if (queryStatementsBySql.size > MAX_QUERY_STATEMENT_CACHE_SIZE) {
+        const oldest = queryStatementsBySql.values().next().value as
+          | QueryStatementCacheEntry
+          | undefined;
+        if (oldest !== undefined) {
+          retireQueryStatement(oldest);
+        }
+      }
+    } else {
+      // Map iteration order is the LRU order. Refresh a hit to the newest end.
+      queryStatementsBySql.delete(sql);
+      queryStatementsBySql.set(sql, entry);
+    }
+
+    entry.pending += 1;
+
+    // The native statement mutates its bound parameters. Concurrent all()
+    // calls on one statement race and can return another caller's rows, so
+    // every cache entry owns a tiny promise queue.
+    const turn = entry.tail;
+    let release!: () => void;
+    const completion = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    entry.tail = turn.then(() => completion);
+
+    return { entry, turn, release };
+  };
+
+  const adapter: TursoAdapter = {
     libsqlSearchAdapter: true,
     backend: 'turso',
 
@@ -109,6 +235,7 @@ export function tursoAdapter(database: TursoDatabase): DatabaseAdapter {
     supportsVectorIndex: false,
 
     async executeDdl(sql: string): Promise<void> {
+      assertUsable();
       await database.exec(sql);
     },
 
@@ -118,20 +245,31 @@ export function tursoAdapter(database: TursoDatabase): DatabaseAdapter {
         | Readonly<Record<string, string | number | bigint | Uint8Array | null>>
         | ReadonlyArray<string | number | bigint | Uint8Array | null>
     ): Promise<Array<Record<string, unknown>>> {
-      const statement = database.prepare(sql);
+      const { entry, turn, release } = acquireQueryStatement(sql);
+      await turn;
 
       try {
         // `all()` binds nothing when called with no argument. Passing an
         // explicit `undefined` would be read as a single positional bind of
         // NULL.
-        const rows = await (args === undefined ? statement.all() : statement.all(args));
+        const rows = await (
+          args === undefined ? entry.statement.all() : entry.statement.all(args)
+        );
 
         return rows as Array<Record<string, unknown>>;
+      } catch (error) {
+        // Do not keep a statement whose execution failed in the reusable LRU.
+        // Calls already queued on it may finish, then the final release closes
+        // it; a later call prepares a clean replacement.
+        retireQueryStatement(entry);
+        throw error;
       } finally {
-        // Every query prepares its own statement, so skipping this leaks on
-        // every call. An SSR site calling search() per request is the case that
-        // makes it fatal rather than untidy.
-        closeStatement(statement);
+        entry.pending -= 1;
+        release();
+
+        if (entry.retired && entry.pending === 0) {
+          await closeQueryStatement(entry);
+        }
       }
     },
 
@@ -154,6 +292,7 @@ export function tursoAdapter(database: TursoDatabase): DatabaseAdapter {
         args?: ReadonlyArray<string | number | bigint | Uint8Array | null>;
       }>
     ): Promise<void> {
+      assertUsable();
       const preparedBySql = new Map<string, TursoStatement>();
 
       const prepareOnce = (sql: string): TursoStatement => {
@@ -199,29 +338,56 @@ export function tursoAdapter(database: TursoDatabase): DatabaseAdapter {
         // stays bound to the transaction while it is open, so closing earlier
         // would release it out from under the write in progress.
         for (const prepared of preparedBySql.values()) {
-          closeStatement(prepared);
+          await closeStatement(prepared);
         }
 
         preparedBySql.clear();
       }
+    },
+
+    dispose(): Promise<void> {
+      disposePromise ??= (async () => {
+        disposed = true;
+
+        // Copy first because retiring an entry removes it from the LRU map.
+        for (const entry of [...queryStatementsBySql.values()]) {
+          retireQueryStatement(entry);
+        }
+
+        // Includes already-evicted statements that still have queued calls.
+        // Their per-entry tails resolve only after the last call releases its
+        // turn, so no native statement is closed while it is still in use.
+        await Promise.all(
+          [...liveQueryStatements].map(async entry => {
+            await entry.tail;
+            await closeQueryStatement(entry);
+          })
+        );
+      })();
+
+      return disposePromise;
     }
   };
+
+  return adapter;
 }
 
 /**
  * Release a prepared statement, ignoring any failure.
  *
- * Called from `finally` blocks, so throwing here would replace the error that
- * is actually worth reporting. A close failure is not actionable by the caller,
- * and closing is idempotent on this backend.
+ * Used from transaction `finally` blocks, query-cache eviction, and adapter
+ * disposal. Throwing here could replace the error that is actually worth
+ * reporting or turn best-effort cache cleanup into an unhandled rejection. A
+ * close failure is not actionable by the caller, and closing is idempotent on
+ * this backend.
  *
  * Deliberately quieter than `warnOnFailedRollback` below: a failed rollback
  * happens at most once per rebuild, while this runs once per query — on the
  * exact hot path the close exists to protect. Warning here would flood it.
  */
-function closeStatement(statement: TursoStatement): void {
+async function closeStatement(statement: TursoStatement): Promise<void> {
   try {
-    statement.close?.();
+    await statement.close?.();
   } catch {
     // ignored on purpose
   }

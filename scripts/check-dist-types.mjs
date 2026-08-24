@@ -151,7 +151,12 @@ async function assertMainEntryUnchanged() {
  * below proves rather than assumes.
  */
 const EXPECTED_TURSO_VALUE_EXPORTS = ['tursoAdapter'];
-const EXPECTED_TURSO_TYPE_EXPORTS = ['DatabaseAdapter', 'TursoDatabase', 'TursoStatement'];
+const EXPECTED_TURSO_TYPE_EXPORTS = [
+  'DatabaseAdapter',
+  'TursoAdapter',
+  'TursoDatabase',
+  'TursoStatement',
+];
 
 async function assertTursoEntryExports() {
   const source = await readFile(join(distDirectory, 'turso.d.ts'), 'utf8');
@@ -216,11 +221,13 @@ declare const handle: { exec(sql: string): unknown; prepare(sql: string): { run(
 // The assignments are the assertion: an adapter produced by the subpath entry
 // must satisfy the client type declared by the main entry, across two
 // independently bundled declarations.
-const searchClient: SearchOptions['client'] = tursoAdapter(handle);
-const indexClient: IndexerOptions['client'] = tursoAdapter(handle);
+const adapter = tursoAdapter(handle);
+const searchClient: SearchOptions['client'] = adapter;
+const indexClient: IndexerOptions['client'] = adapter;
 
 void searchClient;
 void indexClient;
+void adapter.dispose();
 `;
 
   await writeFile(consumerFile, consumerSource);

@@ -107,13 +107,15 @@ interface ContentFile {
 /**
  * Internal build-phase view of a document.
  *
- * `serializedTags` is derived from `tags` during the parse stage so that
- * unserializable tags fail the file there rather than at bind time. It is an
- * implementation detail of the build-to-replace handoff and deliberately kept
- * off the exported `IndexedDocument`.
+ * Serialized values are derived during their corresponding build stages so
+ * that serialization failures remain attributable to a source file rather
+ * than escaping into the replacement phase. They are implementation details
+ * of the build-to-replace handoff and deliberately kept off the exported
+ * `IndexedDocument`.
  */
 interface BuiltDocument extends IndexedDocument {
   serializedTags: string;
+  serializedEmbedding: string;
 }
 
 type BuildOutcome =
@@ -311,11 +313,13 @@ async function buildDocument(
   }
 
   let embedding: number[];
+  let serializedEmbedding: string;
   try {
     embedding = await generateEmbedding(parsed.embeddingText, {
       ...embeddingOptions,
       intent: embeddingOptions.intent ?? 'document'
     });
+    serializedEmbedding = JSON.stringify(embedding);
   } catch (error) {
     return { ok: false, stage: 'embed', error: toError(error) };
   }
@@ -330,6 +334,7 @@ async function buildDocument(
       tags: parsed.tags,
       serializedTags: parsed.serializedTags,
       embedding,
+      serializedEmbedding,
       metadata: parsed.metadata
     }
   };
@@ -509,7 +514,7 @@ function createInsertStatement(
       document.content,
       document.folder,
       document.serializedTags,
-      JSON.stringify(document.embedding)
+      document.serializedEmbedding
     ]
   };
 }

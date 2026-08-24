@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { mkdir, writeFile, rm, symlink } from 'fs/promises';
 import { join } from 'path';
@@ -86,6 +86,7 @@ describe('indexer', () => {
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
     resetHuggingFaceTransformersMock();
+    vi.unstubAllGlobals();
   });
 
   describe('createTable', () => {
@@ -635,6 +636,87 @@ describe('indexer', () => {
       expect(result.failed).toBe(1);
       expect(result.partial).toBe(true);
       expect(result.failures[0].file).toBe('listed.md');
+
+      expect(await indexedTitles()).toEqual(['Valid']);
+    }, 30000);
+
+    it('should treat an unserializable embedding as an embed failure', async () => {
+      await writeFile(join(testDir, 'broken.md'), '---\ntitle: Broken\n---\nContent');
+
+      const embedding = new Array(384).fill(1);
+      const circular: { self?: unknown } = {};
+      circular.self = circular;
+      Object.defineProperty(embedding, 'toJSON', { value: () => circular });
+
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ data: [{ index: 0, embedding }] })
+      }));
+
+      const error = await captureError(() => indexContent({
+        client,
+        contentPath: testDir,
+        embeddingOptions: {
+          provider: 'openai-compatible',
+          baseUrl: 'https://example.com/v1',
+          model: 'test-model',
+          dimensions: 384
+        }
+      }));
+
+      expect(error).toBeInstanceOf(IndexingError);
+      const indexingError = error as IndexingError;
+      expect(indexingError.phase).toBe('build');
+      expect(indexingError.failures).toHaveLength(1);
+      expect(indexingError.failures[0].file).toBe('broken.md');
+      expect(indexingError.failures[0].stage).toBe('embed');
+      expect(indexingError.failures[0].error.message).toContain('circular');
+
+      expect(await indexedTitles()).toEqual(['First']);
+    }, 30000);
+
+    it('should skip an unserializable embedding under skip policy', async () => {
+      await writeFile(join(testDir, 'broken.md'), '---\ntitle: Broken\n---\nContent');
+      await writeFile(join(testDir, 'valid.md'), '---\ntitle: Valid\n---\nContent');
+
+      const embedding = new Array(384).fill(1);
+      const circular: { self?: unknown } = {};
+      circular.self = circular;
+      Object.defineProperty(embedding, 'toJSON', { value: () => circular });
+
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          json: async () => ({ data: [{ index: 0, embedding }] })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          json: async () => ({
+            data: [{ index: 0, embedding: new Array(384).fill(1) }]
+          })
+        });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await indexContent({
+        client,
+        contentPath: testDir,
+        embeddingOptions: {
+          provider: 'openai-compatible',
+          baseUrl: 'https://example.com/v1',
+          model: 'test-model',
+          dimensions: 384
+        },
+        failurePolicy: 'skip'
+      });
+
+      expect(result.success).toBe(1);
+      expect(result.failed).toBe(1);
+      expect(result.partial).toBe(true);
+      expect(result.failures[0].file).toBe('broken.md');
+      expect(result.failures[0].stage).toBe('embed');
 
       expect(await indexedTitles()).toEqual(['Valid']);
     }, 30000);

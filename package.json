@@ -82,7 +82,7 @@
     "@rollup/plugin-commonjs": "^29.0.3",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@tursodatabase/database": "^0.7.2",
-    "@types/node": "^24.13.3",
+    "@types/node": "^26.4.0",
     "@vitest/coverage-v8": "4.1.11",
     "@vitest/ui": "^4.1.11",
     "rollup": "^4.62.5",

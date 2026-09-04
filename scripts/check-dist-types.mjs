@@ -240,9 +240,11 @@ void adapter.dispose();
         '--noEmit',
         '--strict',
         '--target', 'ES2022',
-        '--module', 'ES2022',
-        '--moduleResolution', 'node',
+        '--module', 'nodenext',
+        '--moduleResolution', 'nodenext',
         '--skipLibCheck',
+        // tsc errors on a commandline file while tsconfig.json exists; these flags are the whole config.
+        '--ignoreConfig',
         consumerFile,
       ],
       { encoding: 'utf8', cwd: repoRoot },

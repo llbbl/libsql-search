@@ -1,6 +1,6 @@
 {
   "name": "@logan/libsql-search",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "exports": "./src/index.ts",
   "imports": {
     "fs/promises": "node:fs/promises",

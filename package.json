@@ -78,7 +78,7 @@
     "gray-matter": "^4.0.3"
   },
   "devDependencies": {
-    "@libsql/client": "^0.17.4",
+    "@libsql/client": "^0.18.0",
     "@rollup/plugin-commonjs": "^29.0.3",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@tursodatabase/database": "^0.7.2",

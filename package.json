@@ -81,7 +81,7 @@
     "@libsql/client": "^0.18.0",
     "@rollup/plugin-commonjs": "^29.0.3",
     "@rollup/plugin-node-resolve": "^16.0.3",
-    "@tursodatabase/database": "^0.7.2",
+    "@tursodatabase/database": "^0.8.1",
     "@types/node": "^26.4.1",
     "@typescript/typescript6": "^6.0.2",
     "@vitest/coverage-v8": "5.0.0",

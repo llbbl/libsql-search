@@ -333,8 +333,10 @@ describe('indexer', () => {
     });
 
     it.each([
-      ['scalar', '---json\n"x"\n---\nBody', 'got string'],
-      ['list', '---\n- a\n---\nBody', 'got array'],
+      ['scalar', '---json\n"x"\n---\nBody', 'got String'],
+      ['list', '---\n- a\n---\nBody', 'got Array'],
+      ['date', '---\n2020-01-01\n---\nBody', 'got Date'],
+      ['binary', '---\n!!binary aGk=\n---\nBody', 'got Uint8Array'],
       ['unterminated label', '---json', 'must be followed by a newline']
     ])('should reject %s frontmatter at the parse stage', async (_name, raw, message) => {
       await writeFile(join(testDir, 'bad.md'), raw);

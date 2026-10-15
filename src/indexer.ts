@@ -409,7 +409,7 @@ function parseFrontmatter(raw: string): matter.GrayMatterFile<string> {
   const source = raw.replace(/^\uFEFF/, '');
   const opening = source.startsWith('---') && source[3] !== '-' ? source.slice(3) : '';
   // gray-matter truncates a label with no following newline ("---json" -> "jso").
-  if (opening && !/\r?\n/.test(opening)) {
+  if (opening.trim() && !opening.includes('\n')) {
     throw new Error('Frontmatter opening delimiter must be followed by a newline');
   }
   const language = opening ? matter.language(opening).name : '';
@@ -441,9 +441,10 @@ function parseFrontmatter(raw: string): matter.GrayMatterFile<string> {
     } as Record<string, (input: string) => object>
   });
 
-  // gray-matter maps null to {}, but a valid scalar or list still gets through.
-  if (typeof file.data !== 'object' || Array.isArray(file.data)) {
-    throw new Error(`Frontmatter must be a mapping, got ${describeType(file.data)}`);
+  // gray-matter maps null to {}, but a scalar, list, date or !!binary still gets through.
+  const kind = Object.prototype.toString.call(file.data).slice(8, -1);
+  if (kind !== 'Object') {
+    throw new Error(`Frontmatter must be a mapping, got ${kind}`);
   }
   return file;
 }

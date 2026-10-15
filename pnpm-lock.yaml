@@ -25,8 +25,8 @@ importers:
         specifier: ^16.0.3
         version: 16.0.3(rollup@4.64.7)
       '@tursodatabase/database':
-        specifier: ^0.7.2
-        version: 0.7.2
+        specifier: ^0.8.3
+        version: 0.8.3
       '@types/js-yaml':
         specifier: ^3.12.10
         version: 3.12.10
@@ -542,33 +542,33 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@tursodatabase/database-common@0.7.2':
-    resolution: {integrity: sha512-c4uWaA5m7nyDemUrjvX6lQQ89cBxv1jCv7nmwq5JoagyXgbMxDeBfLcY7N5kn0oEcnD0Y+cf09S0wKEXKFKbfg==}
+  '@tursodatabase/database-common@0.8.3':
+    resolution: {integrity: sha512-T8sMfSnRjgGzKMDVkSg0lh1Jh6dDtTWzjYFK0ZJHtKzr+zs69a7Igo4Z+sxfh+rk9gEqn2njLgRYfpMEghMVMw==}
 
-  '@tursodatabase/database-darwin-arm64@0.7.2':
-    resolution: {integrity: sha512-pDYbrPnmsqzWsf21bQXXGKmGhcLdfQQVjx+yrpC/IboCue5o/h9fDZ1QFzQEP6CHRXXoc+pwQCyF8KBntI8fdA==}
+  '@tursodatabase/database-darwin-arm64@0.8.3':
+    resolution: {integrity: sha512-ZqXF8BUqED5mmSIRM5V13xiowc3CAekfpB26Opb4kbix5/9Q6AKgoxyZ1TkgMgjpih1FXAxD5UKdJ6b8D3IElw==}
     cpu: [arm64]
     os: [darwin]
 
-  '@tursodatabase/database-linux-arm64-gnu@0.7.2':
-    resolution: {integrity: sha512-/Blz7cRssWh7dk8vGs7Cq3kupHOnI0GROAg+u9J4MD5U5ABAabJGN7iW5YQ16jZW35Bv2AkmJAyjvsCWdTyfTg==}
+  '@tursodatabase/database-linux-arm64-gnu@0.8.3':
+    resolution: {integrity: sha512-4m9EqKDhL0gwqg6r4KHqX1+2PjMx0xS8CQ61hpoGmWPaCYygePo6O0Zv7EADcf8JJwSBhe7MHyt76gcaEuZDTA==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@tursodatabase/database-linux-x64-gnu@0.7.2':
-    resolution: {integrity: sha512-rXxInfTxKRPG3XeOAZvzJuX4wF+m9t9BjLbFnKU83Ad8ob2z88r1x+EV7IBzEFhz2FbvrRgriH7PhIEZ7Lx5ug==}
+  '@tursodatabase/database-linux-x64-gnu@0.8.3':
+    resolution: {integrity: sha512-CrwYN45/zCSS+qPOqdOw7wI+MKE6ZHWehxwqJJwatW8CAI/tcEWxz3t+gc1v+p8jgGuNGqTJL3QUu2AnQYVC0Q==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@tursodatabase/database-win32-x64-msvc@0.7.2':
-    resolution: {integrity: sha512-AUvN3KO1bZOpsXVofRIMM2+MJ6OghUhgK62t8/3Bsb0Zzt6PztaMvJrtaWI6u5Olx0WCfGdhaVKyegcjYPNAeA==}
+  '@tursodatabase/database-win32-x64-msvc@0.8.3':
+    resolution: {integrity: sha512-N19zq+nM9RSeYn4t0FOkfHPMkeWpgHLI2IM3L6dT8KH+bhvdAAAzp2E+cKjl8NQm6RaBSP8f5yqZqV3tp3ET0A==}
     cpu: [x64]
     os: [win32]
 
-  '@tursodatabase/database@0.7.2':
-    resolution: {integrity: sha512-B84QicyDYnKt97qxgb7861cQQC26kuv/LkUlCnpxGs4tuGT9zgS2z/Mt+BkG/wOo1fB4rsSycOgGCbi0xU0YOQ==}
+  '@tursodatabase/database@0.8.3':
+    resolution: {integrity: sha512-pYkADI524URbtreTz+JX7lKtNnfIZU5Pm0n8d6ENnLka3/l1sIexdDmPDWQea4M7CMURv7FxL44oJFYoMQLmOQ==}
 
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
@@ -1580,28 +1580,28 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.64.7':
     optional: true
 
-  '@tursodatabase/database-common@0.7.2': {}
+  '@tursodatabase/database-common@0.8.3': {}
 
-  '@tursodatabase/database-darwin-arm64@0.7.2':
+  '@tursodatabase/database-darwin-arm64@0.8.3':
     optional: true
 
-  '@tursodatabase/database-linux-arm64-gnu@0.7.2':
+  '@tursodatabase/database-linux-arm64-gnu@0.8.3':
     optional: true
 
-  '@tursodatabase/database-linux-x64-gnu@0.7.2':
+  '@tursodatabase/database-linux-x64-gnu@0.8.3':
     optional: true
 
-  '@tursodatabase/database-win32-x64-msvc@0.7.2':
+  '@tursodatabase/database-win32-x64-msvc@0.8.3':
     optional: true
 
-  '@tursodatabase/database@0.7.2':
+  '@tursodatabase/database@0.8.3':
     dependencies:
-      '@tursodatabase/database-common': 0.7.2
+      '@tursodatabase/database-common': 0.8.3
     optionalDependencies:
-      '@tursodatabase/database-darwin-arm64': 0.7.2
-      '@tursodatabase/database-linux-arm64-gnu': 0.7.2
-      '@tursodatabase/database-linux-x64-gnu': 0.7.2
-      '@tursodatabase/database-win32-x64-msvc': 0.7.2
+      '@tursodatabase/database-darwin-arm64': 0.8.3
+      '@tursodatabase/database-linux-arm64-gnu': 0.8.3
+      '@tursodatabase/database-linux-x64-gnu': 0.8.3
+      '@tursodatabase/database-win32-x64-msvc': 0.8.3
 
   '@types/chai@5.2.3':
     dependencies:

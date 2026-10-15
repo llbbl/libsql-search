@@ -1,2 +1,8 @@
 onlyBuiltDependencies:
   - esbuild
+
+# sprintf-js has no patched release; it arrives via js-yaml 3 -> argparse, which only
+# the js-yaml CLI loads, never the library. Goes away once gray-matter is dropped.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-hp3w-g68c-fv3c

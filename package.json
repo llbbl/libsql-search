@@ -82,7 +82,7 @@
     "@libsql/client": "^0.17.4",
     "@rollup/plugin-commonjs": "^29.0.3",
     "@rollup/plugin-node-resolve": "^16.0.3",
-    "@tursodatabase/database": "^0.7.2",
+    "@tursodatabase/database": "^0.8.3",
     "@types/js-yaml": "^3.12.10",
     "@types/node": "^26.6.5",
     "@typescript/typescript6": "^6.0.2",

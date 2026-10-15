@@ -22,6 +22,8 @@ function createTempRepo() {
   run(['init', '-b', 'main']);
   run(['config', 'user.name', 'Test User']);
   run(['config', 'user.email', 'test@example.com']);
+  run(['config', '--local', 'commit.gpgsign', 'false']);
+  run(['config', '--local', 'tag.gpgsign', 'false']);
   writeJson('package.json', { name: 'libsql-search', version: '0.1.4' });
   writeJson('jsr.json', { name: '@logan/libsql-search', version: '0.1.4' });
   writeJson('deno.json', { name: '@logan/libsql-search', version: '0.1.4' });

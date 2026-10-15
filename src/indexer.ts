@@ -9,6 +9,14 @@ import { generateEmbedding, prepareTextForEmbedding, type EmbeddingOptions } fro
 import { normalizeVectorDimensions, quoteSqlIdentifier } from './sql.js';
 import { resolveDatabase, type DatabaseAdapter, type DatabaseClient } from './database.js';
 
+// Capture the built-in safe YAML parser once: gray-matter's public engines
+// registry is mutable, and documents must not select a subsequently registered
+// parser. Its runtime engines property is missing from its type declarations.
+const parseYaml = (matter as typeof matter & {
+  engines: { yaml: { parse: (input: string) => object } };
+}).engines.yaml.parse;
+const parseJson: (input: string) => object = JSON.parse;
+
 /**
  * How build-phase failures are handled.
  *
@@ -358,7 +366,7 @@ interface ParsedFile {
  * Parse frontmatter and derive the document fields used for embedding
  */
 function parseFile(file: ContentFile, raw: string): ParsedFile {
-  const { data: frontMatter, content: markdown } = matter(raw);
+  const { data: frontMatter, content: markdown } = parseFrontmatter(raw);
 
   // Generate slug from relative path
   const slug = file.relativePath
@@ -391,6 +399,36 @@ function parseFile(file: ContentFile, raw: string): ParsedFile {
     embeddingText,
     metadata: frontMatter
   };
+}
+
+/** Only data formats may be selected by a document's opening delimiter. */
+function parseFrontmatter(raw: string): matter.GrayMatterFile<string> {
+  // Match gray-matter's BOM handling and opening-delimiter detection. A line
+  // beginning with four dashes is Markdown, rather than frontmatter.
+  const source = raw.replace(/^\uFEFF/, '');
+  const language = source.startsWith('---') && source[3] !== '-'
+    ? matter.language(source.slice(3)).name
+    : '';
+
+  let parser: (input: string) => object;
+  switch (language.toLowerCase()) {
+    case '':
+    case 'yaml':
+    case 'yml':
+      parser = parseYaml;
+      break;
+    case 'json':
+      parser = parseJson;
+      break;
+    default:
+      throw new Error(`Unsupported frontmatter language "${language}": expected YAML or JSON`);
+  }
+
+  // An explicit options object also bypasses gray-matter's process-global
+  // raw-document cache, preventing corpus retention and reuse of cached data.
+  return matter(raw, {
+    engines: { yaml: parseYaml, [language || 'yaml']: parser }
+  });
 }
 
 /**

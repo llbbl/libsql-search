@@ -11,6 +11,9 @@ importers:
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
+      js-yaml:
+        specifier: ^3.15.2
+        version: 3.15.2
     devDependencies:
       '@libsql/client':
         specifier: ^0.17.4
@@ -24,6 +27,9 @@ importers:
       '@tursodatabase/database':
         specifier: ^0.7.2
         version: 0.7.2
+      '@types/js-yaml':
+        specifier: ^3.12.10
+        version: 3.12.10
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
@@ -575,6 +581,9 @@ packages:
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
+
+  '@types/js-yaml@3.12.10':
+    resolution: {integrity: sha512-/Mtaq/wf+HxXpvhzFYzrzCqNRcA958sW++7JOFC8nPrZcvfi/TrzOaaGbvt27ltJB2NQbHVAg5a1wUCsyMH7NA==}
 
   '@types/node@26.6.5':
     resolution: {integrity: sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==}
@@ -1604,6 +1613,8 @@ snapshots:
   '@types/estree@1.0.8': {}
 
   '@types/estree@1.0.9': {}
+
+  '@types/js-yaml@3.12.10': {}
 
   '@types/node@26.6.5':
     dependencies:

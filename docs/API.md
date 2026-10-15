@@ -157,6 +157,7 @@ Behavior notes:
 - that costs peak memory proportional to the whole corpus, and against remote clients the replacement travels as a single un-chunked batch request; see [Costs of the two-phase rebuild](./INDEXING.md#costs-of-the-two-phase-rebuild) before rebuilding a very large corpus in place
 - files are discovered and indexed in sorted path order
 - frontmatter `title` must be a scalar; a structured title such as a YAML list fails the file at the `parse` stage
+- frontmatter must be a YAML or JSON mapping (`---`, `---yaml`, `---yml`, `---json`); `---js`, `---javascript`, custom gray-matter engines, and scalar or list frontmatter fail the file at the `parse` stage
 - two files that reduce to the same slug (`foo.md` and `foo.markdown`) collide: the first in sorted path order keeps the slug and the later file is reported as a `parse` failure
 - `failurePolicy: "abort"` throws `IndexingError` on the first file that fails
 - `failurePolicy: "skip"` drops the failing file, records it in `failures`, and rebuilds from the survivors, returning `partial: true`

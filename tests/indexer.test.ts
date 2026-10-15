@@ -332,6 +332,42 @@ describe('indexer', () => {
       expect(embeddingServiceMock.fetch).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['scalar', '---json\n"x"\n---\nBody', 'got string'],
+      ['list', '---\n- a\n---\nBody', 'got array'],
+      ['unterminated label', '---json', 'must be followed by a newline']
+    ])('should reject %s frontmatter at the parse stage', async (_name, raw, message) => {
+      await writeFile(join(testDir, 'bad.md'), raw);
+
+      const error = await indexContent({
+        client,
+        contentPath: testDir,
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
+      }).catch((error: unknown) => error);
+
+      expect(error).toBeInstanceOf(IndexingError);
+      const failure = (error as IndexingError).failures[0];
+      expect(failure.stage).toBe('parse');
+      expect(String(failure.error)).toContain(message);
+    });
+
+    it('should not use a YAML engine registered on gray-matter', async () => {
+      const engines = (matter as unknown as { engines: Record<string, unknown> }).engines;
+      const original = engines.yaml;
+      const hijack = vi.fn(() => ({ title: 'Hijacked' }));
+      engines.yaml = { parse: hijack };
+      try {
+        await writeFile(join(testDir, 'doc.md'), '---\ntitle: Real\n---\nBody');
+        await indexContent({ client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS });
+      } finally {
+        engines.yaml = original;
+      }
+
+      expect(hijack).not.toHaveBeenCalled();
+      const articles = await client.execute('SELECT title FROM articles');
+      expect(articles.rows[0].title).toBe('Real');
+    });
+
     it.each(['', 'yaml', 'yml', 'YAML', 'json', 'JSON'])(
       'should accept safe frontmatter with language label "%s"',
       async language => {

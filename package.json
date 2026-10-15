@@ -75,13 +75,15 @@
     }
   },
   "dependencies": {
-    "gray-matter": "^4.0.3"
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^3.15.2"
   },
   "devDependencies": {
     "@libsql/client": "^0.17.4",
     "@rollup/plugin-commonjs": "^29.0.3",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@tursodatabase/database": "^0.7.2",
+    "@types/js-yaml": "^3.12.10",
     "@types/node": "^26.6.5",
     "@typescript/typescript6": "^6.0.2",
     "@vitest/coverage-v8": "5.0.4",

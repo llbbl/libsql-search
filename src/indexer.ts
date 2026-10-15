@@ -5,17 +5,18 @@
 import { readdir, readFile } from 'fs/promises';
 import { join, relative, dirname, extname } from 'path';
 import matter from 'gray-matter';
+import yaml from 'js-yaml';
 import { generateEmbedding, prepareTextForEmbedding, type EmbeddingOptions } from './embeddings.js';
 import { normalizeVectorDimensions, quoteSqlIdentifier } from './sql.js';
 import { resolveDatabase, type DatabaseAdapter, type DatabaseClient } from './database.js';
 
-// Capture the built-in safe YAML parser once: gray-matter's public engines
-// registry is mutable, and documents must not select a subsequently registered
-// parser. Its runtime engines property is missing from its type declarations.
-const parseYaml = (matter as typeof matter & {
-  engines: { yaml: { parse: (input: string) => object } };
-}).engines.yaml.parse;
-const parseJson: (input: string) => object = JSON.parse;
+// Parsers come from js-yaml directly, not gray-matter's mutable global engines
+// registry, so code that ran before this module loaded cannot swap them.
+const parseYaml = (input: string): unknown => yaml.safeLoad(input);
+const parseJson = (input: string): unknown => JSON.parse(input);
+const rejectExecutable = (): never => {
+  throw new Error('Executable frontmatter is not supported');
+};
 
 /**
  * How build-phase failures are handled.
@@ -406,11 +407,14 @@ function parseFrontmatter(raw: string): matter.GrayMatterFile<string> {
   // Match gray-matter's BOM handling and opening-delimiter detection. A line
   // beginning with four dashes is Markdown, rather than frontmatter.
   const source = raw.replace(/^\uFEFF/, '');
-  const language = source.startsWith('---') && source[3] !== '-'
-    ? matter.language(source.slice(3)).name
-    : '';
+  const opening = source.startsWith('---') && source[3] !== '-' ? source.slice(3) : '';
+  // gray-matter truncates a label with no following newline ("---json" -> "jso").
+  if (opening && !/\r?\n/.test(opening)) {
+    throw new Error('Frontmatter opening delimiter must be followed by a newline');
+  }
+  const language = opening ? matter.language(opening).name : '';
 
-  let parser: (input: string) => object;
+  let parser: (input: string) => unknown;
   switch (language.toLowerCase()) {
     case '':
     case 'yaml':
@@ -426,9 +430,22 @@ function parseFrontmatter(raw: string): matter.GrayMatterFile<string> {
 
   // An explicit options object also bypasses gray-matter's process-global
   // raw-document cache, preventing corpus retention and reuse of cached data.
-  return matter(raw, {
-    engines: { yaml: parseYaml, [language || 'yaml']: parser }
+  // The javascript engine is overridden too, in case gray-matter's detection
+  // ever disagrees with the pre-pass above.
+  const file = matter(raw, {
+    engines: {
+      javascript: rejectExecutable,
+      js: rejectExecutable,
+      yaml: parseYaml,
+      [language || 'yaml']: parser
+    } as Record<string, (input: string) => object>
   });
+
+  // gray-matter maps null to {}, but a valid scalar or list still gets through.
+  if (typeof file.data !== 'object' || Array.isArray(file.data)) {
+    throw new Error(`Frontmatter must be a mapping, got ${describeType(file.data)}`);
+  }
+  return file;
 }
 
 /**

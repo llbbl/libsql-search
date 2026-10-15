@@ -5,9 +5,18 @@
 import { readdir, readFile } from 'fs/promises';
 import { join, relative, dirname, extname } from 'path';
 import matter from 'gray-matter';
+import yaml from 'js-yaml';
 import { generateEmbedding, prepareTextForEmbedding, type EmbeddingOptions } from './embeddings.js';
 import { normalizeVectorDimensions, quoteSqlIdentifier } from './sql.js';
 import { resolveDatabase, type DatabaseAdapter, type DatabaseClient } from './database.js';
+
+// Parsers come from js-yaml directly, not gray-matter's mutable global engines
+// registry, so code that ran before this module loaded cannot swap them.
+const parseYaml = (input: string): unknown => yaml.safeLoad(input);
+const parseJson = (input: string): unknown => JSON.parse(input);
+const rejectExecutable = (): never => {
+  throw new Error('Executable frontmatter is not supported');
+};
 
 /**
  * How build-phase failures are handled.
@@ -358,7 +367,7 @@ interface ParsedFile {
  * Parse frontmatter and derive the document fields used for embedding
  */
 function parseFile(file: ContentFile, raw: string): ParsedFile {
-  const { data: frontMatter, content: markdown } = matter(raw);
+  const { data: frontMatter, content: markdown } = parseFrontmatter(raw);
 
   // Generate slug from relative path
   const slug = file.relativePath
@@ -391,6 +400,53 @@ function parseFile(file: ContentFile, raw: string): ParsedFile {
     embeddingText,
     metadata: frontMatter
   };
+}
+
+/** Only data formats may be selected by a document's opening delimiter. */
+function parseFrontmatter(raw: string): matter.GrayMatterFile<string> {
+  // Match gray-matter's BOM handling and opening-delimiter detection. A line
+  // beginning with four dashes is Markdown, rather than frontmatter.
+  const source = raw.replace(/^\uFEFF/, '');
+  const opening = source.startsWith('---') && source[3] !== '-' ? source.slice(3) : '';
+  // gray-matter truncates a label with no following newline ("---json" -> "jso").
+  if (opening.trim() && !opening.includes('\n')) {
+    throw new Error('Frontmatter opening delimiter must be followed by a newline');
+  }
+  const language = opening ? matter.language(opening).name : '';
+
+  let parser: (input: string) => unknown;
+  switch (language.toLowerCase()) {
+    case '':
+    case 'yaml':
+    case 'yml':
+      parser = parseYaml;
+      break;
+    case 'json':
+      parser = parseJson;
+      break;
+    default:
+      throw new Error(`Unsupported frontmatter language "${language}": expected YAML or JSON`);
+  }
+
+  // An explicit options object also bypasses gray-matter's process-global
+  // raw-document cache, preventing corpus retention and reuse of cached data.
+  // The javascript engine is overridden too, in case gray-matter's detection
+  // ever disagrees with the pre-pass above.
+  const file = matter(raw, {
+    engines: {
+      javascript: rejectExecutable,
+      js: rejectExecutable,
+      yaml: parseYaml,
+      [language || 'yaml']: parser
+    } as Record<string, (input: string) => object>
+  });
+
+  // gray-matter maps null to {}, but a scalar, list, date or !!binary still gets through.
+  const kind = Object.prototype.toString.call(file.data).slice(8, -1);
+  if (kind !== 'Object') {
+    throw new Error(`Frontmatter must be a mapping, got ${kind}`);
+  }
+  return file;
 }
 
 /**

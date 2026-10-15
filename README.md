@@ -5,7 +5,7 @@
 [![CI](https://github.com/llbbl/libsql-search/actions/workflows/ci.yml/badge.svg)](https://github.com/llbbl/libsql-search/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-`libsql-search` adds semantic search to Markdown-backed sites with a small TypeScript API. It indexes frontmatter and content from files on disk, stores vectors in libSQL/Turso, and lets you query by meaning instead of exact keywords.
+`libsql-search` adds semantic search to Markdown-backed sites with a small TypeScript API. It indexes YAML or JSON frontmatter and content from files on disk, stores vectors in libSQL/Turso, and lets you query by meaning instead of exact keywords.
 
 Use it when you want:
 

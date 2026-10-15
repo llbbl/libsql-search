@@ -5,6 +5,7 @@ import esbuild from 'rollup-plugin-esbuild';
 const external = [
   '@libsql/client',
   'gray-matter',
+  'js-yaml',
   '@google/genai',
   // Never bundled, and never imported by our source either. Listed so that a
   // future import of it fails the build loudly instead of being inlined into

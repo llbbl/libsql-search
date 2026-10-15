@@ -59,8 +59,9 @@ For very large corpora, index into a parallel table and switch reads over once i
 
 ## Content Requirements
 
-Two authoring mistakes fail a file at the `parse` stage rather than corrupting the rebuild:
+Three authoring mistakes fail a file at the `parse` stage rather than corrupting the rebuild:
 
+- **Frontmatter must be YAML or JSON.** Only `---`, `---yaml`, `---yml`, and `---json` blocks are accepted, and the block must be a mapping. Executable (`---js`, `---javascript`) and custom gray-matter engines are rejected, and engines registered on `matter.engines` are never used.
 - **Frontmatter `title` must be a scalar.** Strings, numbers, booleans, and dates are accepted; dates are stored as ISO strings. A structured title such as a YAML list fails the file. A missing or empty title still falls back to the filename.
 - **Slugs must be unique.** The slug comes from the path with the extension removed, so `foo.md` and `foo.markdown` collide. Files are processed in sorted path order and the first file to claim a slug keeps it, so `foo.markdown` wins and `foo.md` is reported as the failure.
 

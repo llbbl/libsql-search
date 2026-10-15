@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { mkdir, writeFile, rm, symlink } from 'fs/promises';
 import { join } from 'path';
+import matter from 'gray-matter';
 import { createTable, indexContent, IndexingError } from '../src/indexer.js';
 import {
   embeddingServiceMock,
@@ -10,6 +11,12 @@ import {
 } from './embedding-service.mock.js';
 
 type BatchStatement = string | { sql: string; args?: unknown };
+
+// These process-global gray-matter properties are absent from its declarations.
+const matterState = matter as typeof matter & {
+  cache: Record<string, unknown>;
+  engines: Record<string, unknown>;
+};
 
 /**
  * Wraps a client so the replacement batch hits a real database error after the
@@ -299,6 +306,240 @@ describe('indexer', () => {
       expect((error as IndexingError).phase).toBe('build');
       expect((error as IndexingError).message).toContain('No source files found');
       expect((error as IndexingError).message).toContain('allowEmptyIndex');
+    });
+  });
+
+  describe('indexContent frontmatter safety', () => {
+    beforeEach(async () => {
+      await createTable(client);
+    });
+
+    it('should reject executable frontmatter without running its JavaScript', async () => {
+      const sentinel = vi.fn();
+      vi.stubGlobal('__libsqlSearchFrontmatterSentinel', sentinel);
+      await writeFile(join(testDir, 'executable.md'),
+        '---javascript\n(globalThis.__libsqlSearchFrontmatterSentinel(), { title: "Executed" })\n---\nContent');
+
+      const error = await indexContent({
+        client,
+        contentPath: testDir,
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
+      }).catch((error: unknown) => error);
+
+      expect(sentinel).not.toHaveBeenCalled();
+      expect(error).toBeInstanceOf(IndexingError);
+      expect((error as IndexingError).failures[0].stage).toBe('parse');
+      expect(embeddingServiceMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['scalar', '---json\n"x"\n---\nBody', 'got String'],
+      ['list', '---\n- a\n---\nBody', 'got Array'],
+      ['date', '---\n2020-01-01\n---\nBody', 'got Date'],
+      ['binary', '---\n!!binary aGk=\n---\nBody', 'got Uint8Array'],
+      ['unterminated label', '---json', 'must be followed by a newline']
+    ])('should reject %s frontmatter at the parse stage', async (_name, raw, message) => {
+      await writeFile(join(testDir, 'bad.md'), raw);
+
+      const error = await indexContent({
+        client,
+        contentPath: testDir,
+        embeddingOptions: TEST_EMBEDDING_OPTIONS
+      }).catch((error: unknown) => error);
+
+      expect(error).toBeInstanceOf(IndexingError);
+      const failure = (error as IndexingError).failures[0];
+      expect(failure.stage).toBe('parse');
+      expect(String(failure.error)).toContain(message);
+    });
+
+    it('should not use a YAML engine registered on gray-matter', async () => {
+      const engines = (matter as unknown as { engines: Record<string, unknown> }).engines;
+      const original = engines.yaml;
+      const hijack = vi.fn(() => ({ title: 'Hijacked' }));
+      engines.yaml = { parse: hijack };
+      try {
+        await writeFile(join(testDir, 'doc.md'), '---\ntitle: Real\n---\nBody');
+        await indexContent({ client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS });
+      } finally {
+        engines.yaml = original;
+      }
+
+      expect(hijack).not.toHaveBeenCalled();
+      const articles = await client.execute('SELECT title FROM articles');
+      expect(articles.rows[0].title).toBe('Real');
+    });
+
+    it.each(['', 'yaml', 'yml', 'YAML', 'json', 'JSON'])(
+      'should accept safe frontmatter with language label "%s"',
+      async language => {
+        const frontmatter = language.toLowerCase() === 'json'
+          ? '{"title":"Safe document","tags":["safe"]}'
+          : 'title: Safe document\ntags: [safe]';
+        await writeFile(join(testDir, 'safe.md'), `\uFEFF---${language}\r\n${frontmatter}\r\n---\r\nBody`);
+
+        const result = await indexContent({
+          client,
+          contentPath: testDir,
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
+        });
+
+        expect(result.success).toBe(1);
+        const articles = await client.execute('SELECT title, tags, content FROM articles');
+        expect(articles.rows[0]).toMatchObject({
+          title: 'Safe document', tags: '["safe"]', content: 'Body'
+        });
+      }
+    );
+
+    it.each(['js', 'javascript', 'JAVASCRIPT', 'custom', 'constructor', '__proto__'])(
+      'should preserve the old index when language "%s" is rejected',
+      async language => {
+        await writeFile(join(testDir, 'previous.md'), '---\ntitle: Previous\n---\nBody');
+        await indexContent({ client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS });
+        await rm(join(testDir, 'previous.md'));
+        // Even an empty block with an unsupported label must fail closed.
+        await writeFile(join(testDir, 'unsafe.md'), `---${language}\n\n---\nBody`);
+        embeddingServiceMock.fetch.mockClear();
+
+        const error = await captureError(() => indexContent({
+          client,
+          contentPath: testDir,
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
+        }));
+
+        expect(error).toBeInstanceOf(IndexingError);
+        expect((error as IndexingError).phase).toBe('build');
+        expect((error as IndexingError).failures[0]).toMatchObject({ file: 'unsafe.md', stage: 'parse' });
+        expect(embeddingServiceMock.fetch).not.toHaveBeenCalled();
+        const articles = await client.execute('SELECT title FROM articles');
+        expect(articles.rows.map(row => row.title)).toEqual(['Previous']);
+      }
+    );
+
+    it('should reject arbitrary registered engines without invoking them', async () => {
+      const parse = vi.fn(() => ({ title: 'Unsafe registered parser' }));
+      const previous = matterState.engines.custom;
+      matterState.engines.custom = { parse };
+      await writeFile(join(testDir, 'custom.md'), '---custom\nanything\n---\nBody');
+
+      try {
+        const error = await captureError(() => indexContent({
+          client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS
+        }));
+        expect(error).toBeInstanceOf(IndexingError);
+        expect((error as IndexingError).failures[0].stage).toBe('parse');
+        expect(parse).not.toHaveBeenCalled();
+      } finally {
+        if (previous === undefined) delete matterState.engines.custom;
+        else matterState.engines.custom = previous;
+      }
+    });
+
+    it('should use captured safe parsers when the global engine registry changes', async () => {
+      const parse = vi.fn(() => ({ title: 'Unsafe replacement' }));
+      const previous = { ...matterState.engines };
+      for (const language of ['yaml', 'yml', 'json']) {
+        matterState.engines[language] = { parse };
+        const block = language === 'json' ? '{"title":"Safe"}' : 'title: Safe';
+        await writeFile(join(testDir, `${language}.md`), `---${language}\n${block}\n---\nBody`);
+      }
+
+      try {
+        const result = await indexContent({
+          client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS
+        });
+        expect(result.success).toBe(3);
+        expect(parse).not.toHaveBeenCalled();
+        const articles = await client.execute('SELECT title FROM articles');
+        expect(articles.rows.map(row => row.title)).toEqual(['Safe', 'Safe', 'Safe']);
+      } finally {
+        for (const language of ['yaml', 'yml', 'json']) {
+          if (Object.hasOwn(previous, language)) matterState.engines[language] = previous[language];
+          else delete matterState.engines[language];
+        }
+      }
+    });
+
+    it('should reject executable YAML tags as parse failures', async () => {
+      await writeFile(join(testDir, 'tagged.md'), '---\ntitle: !!js/function "function() {}"\n---\nBody');
+
+      const error = await captureError(() => indexContent({
+        client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS
+      }));
+
+      expect(error).toBeInstanceOf(IndexingError);
+      expect((error as IndexingError).failures[0].stage).toBe('parse');
+      expect(embeddingServiceMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should skip executable frontmatter and index the remaining documents', async () => {
+      const sentinel = vi.fn();
+      vi.stubGlobal('__libsqlSearchFrontmatterSentinel', sentinel);
+      await writeFile(join(testDir, 'unsafe.md'),
+        '---js\n(globalThis.__libsqlSearchFrontmatterSentinel(), { title: "Unsafe" })\n---\nBody');
+      await writeFile(join(testDir, 'safe.md'), '---\ntitle: Safe survivor\n---\nBody');
+
+      const result = await indexContent({
+        client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS, failurePolicy: 'skip'
+      });
+
+      expect(result).toMatchObject({ success: 1, failed: 1, replaced: true, partial: true });
+      expect(result.failures[0]).toMatchObject({ file: 'unsafe.md', stage: 'parse' });
+      expect(sentinel).not.toHaveBeenCalled();
+      const articles = await client.execute('SELECT title FROM articles');
+      expect(articles.rows.map(row => row.title)).toEqual(['Safe survivor']);
+    });
+
+    it('should not retain source documents in gray-matter process-global cache', async () => {
+      const raw = '---\ntitle: Uncached document regression\n---\nUnique document content';
+      delete matterState.cache[raw];
+      await writeFile(join(testDir, 'uncached.md'), raw);
+
+      try {
+        await indexContent({
+          client,
+          contentPath: testDir,
+          embeddingOptions: TEST_EMBEDDING_OPTIONS
+        });
+
+        expect(Object.hasOwn(matterState.cache, raw)).toBe(false);
+      } finally {
+        delete matterState.cache[raw];
+      }
+    });
+
+    it('should ignore previously cached frontmatter data', async () => {
+      const raw = '---\ntitle: Fresh source data\n---\nCache bypass regression';
+      const cached = matter(raw);
+      cached.data.title = 'Stale cached data';
+      await writeFile(join(testDir, 'fresh.md'), raw);
+
+      try {
+        await indexContent({ client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS });
+        const articles = await client.execute('SELECT title FROM articles');
+        expect(articles.rows[0].title).toBe('Fresh source data');
+      } finally {
+        delete matterState.cache[raw];
+      }
+    });
+
+    it('should reject executable labels even when a parsed result was previously cached', async () => {
+      const raw = '---javascript\n({ title: "Previously cached" })\n---\nBody';
+      // Seed the external library cache without evaluating the source payload.
+      matterState.cache[raw] = { data: { title: 'Previously cached' }, content: 'Body' };
+      await writeFile(join(testDir, 'cached-js.md'), raw);
+
+      try {
+        const error = await captureError(() => indexContent({
+          client, contentPath: testDir, embeddingOptions: TEST_EMBEDDING_OPTIONS
+        }));
+        expect(error).toBeInstanceOf(IndexingError);
+        expect((error as IndexingError).failures[0].stage).toBe('parse');
+        expect(embeddingServiceMock.fetch).not.toHaveBeenCalled();
+      } finally {
+        delete matterState.cache[raw];
+      }
     });
   });
 

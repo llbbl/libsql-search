@@ -1,5 +1,9 @@
-onlyBuiltDependencies:
-  - esbuild
+enablePrePostScripts: true
+
+allowBuilds:
+  esbuild: true
+  '@google/genai': false
+  protobufjs: false
 
 # sprintf-js has no patched release; it arrives via js-yaml 3 -> argparse, which only
 # the js-yaml CLI loads, never the library. Goes away once gray-matter is dropped.

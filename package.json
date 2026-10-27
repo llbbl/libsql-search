@@ -3,7 +3,7 @@
   "version": "0.11.7",
   "description": "Semantic search for static sites using libSQL/Turso with multi-provider embeddings",
   "type": "module",
-  "packageManager": "pnpm@10.34.5",
+  "packageManager": "pnpm@12.15.0",
   "main": "./dist/index.cjs",
   "types": "./dist/index.d.ts",
   "exports": {

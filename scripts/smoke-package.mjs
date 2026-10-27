@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-const pnpmVersion = '10.34.5';
+const pnpmVersion = '12.15.0';
 
 /**
  * Every arm of the published peer range, as separate install specs.
@@ -108,13 +108,15 @@ async function writeConsumerProject(directory) {
     ),
   );
 
-  await writeFile(join(directory, '.npmrc'), 'enable-pre-post-scripts=true\n');
   await writeFile(
     join(directory, 'pnpm-workspace.yaml'),
     [
-      'onlyBuiltDependencies:',
-      '  - esbuild',
-      '  - protobufjs',
+      'enablePrePostScripts: true',
+      '',
+      'allowBuilds:',
+      '  esbuild: true',
+      '  protobufjs: true',
+      '  "@google/genai": false',
       '',
     ].join('\n'),
   );

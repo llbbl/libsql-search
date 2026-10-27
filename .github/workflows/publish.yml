@@ -113,7 +113,7 @@ jobs:
         if: steps.mode.outputs.mode == 'manual' || steps.mode.outputs.mode == 'dispatch'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 10.34.5
+          version: 12.15.0
 
       - name: Setup Deno for selected tag validation
         if: steps.mode.outputs.mode == 'manual' || steps.mode.outputs.mode == 'dispatch'
@@ -173,7 +173,7 @@ jobs:
         if: steps.fresh-main.outputs.current == 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 10.34.5
+          version: 12.15.0
 
       - name: Setup Node.js
         if: steps.fresh-main.outputs.current == 'true'
@@ -279,7 +279,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 10.34.5
+          version: 12.15.0
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -347,7 +347,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 10.34.5
+          version: 12.15.0
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7

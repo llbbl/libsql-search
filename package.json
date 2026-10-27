@@ -96,6 +96,6 @@
     "vitest": "^5.0.5"
   },
   "optionalDependencies": {
-    "@google/genai": "2.30.0"
+    "@google/genai": "2.31.0"
   }
 }
